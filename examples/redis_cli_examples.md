@@ -1,0 +1,10 @@
+# redis-cli Examples
+
+```bash
+redis-cli -p 6379 PING
+redis-cli -p 6379 SET name alice
+redis-cli -p 6379 GET name
+redis-cli -p 6379 EXPIRE name 10
+redis-cli -p 6379 TTL name
+redis-cli -p 6379 DEL name
+```
