@@ -1,13 +1,17 @@
 #include "miniredis/server.hpp"
 
+#include "miniredis/aof.hpp"
 #include "miniredis/command.hpp"
 #include "miniredis/resp.hpp"
 #include "miniredis/store.hpp"
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
+#include <cctype>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -69,7 +73,28 @@ bool send_all(int fd, const std::string& response) {
     return true;
 }
 
-void handle_client(int client_fd, CommandDispatcher& dispatcher) {
+std::string command_name(const std::vector<std::string>& command) {
+    if (command.empty()) {
+        return {};
+    }
+
+    auto name = command.front();
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return name;
+}
+
+bool should_append_to_aof(const std::vector<std::string>& command, const std::string& response) {
+    if (response.empty() || response.front() == '-') {
+        return false;
+    }
+
+    const auto name = command_name(command);
+    return name == "SET" || name == "DEL" || name == "EXPIRE";
+}
+
+void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof) {
     std::string buffer;
     std::array<char, 4096> chunk{};
 
@@ -96,6 +121,15 @@ void handle_client(int client_fd, CommandDispatcher& dispatcher) {
         }
 
         const auto response = dispatcher.execute(*command);
+        if (should_append_to_aof(*command, response)) {
+            try {
+                aof.append(resp::array(*command));
+            } catch (const std::exception& error) {
+                send_all(client_fd, resp::error(error.what()));
+                return;
+            }
+        }
+
         if (!send_all(client_fd, response)) {
             return;
         }
@@ -140,6 +174,17 @@ int Server::run() {
 
     Store store;
     CommandDispatcher dispatcher(store);
+    Aof aof(config_.aof_path);
+
+    try {
+        const auto replayed = aof.replay(dispatcher);
+        if (replayed > 0) {
+            std::cout << "Replayed " << replayed << " AOF command(s)\n";
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "AOF replay failed: " << error.what() << "\n";
+        return 1;
+    }
 
     std::cout << "Mini Redis listening on 0.0.0.0:" << config_.port << "\n";
 
@@ -159,7 +204,7 @@ int Server::run() {
             continue;
         }
 
-        handle_client(client_fd.get(), dispatcher);
+        handle_client(client_fd.get(), dispatcher, aof);
     }
 }
 
