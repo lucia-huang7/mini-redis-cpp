@@ -17,6 +17,12 @@ void resp_encoder_test() {
     assert(set.has_value());
     assert(*set == (std::vector<std::string>{"SET", "name", "alice"}));
 
+    const std::string pipelined = "*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n";
+    const auto first = miniredis::resp::parse_array_prefix(pipelined);
+    assert(first.has_value());
+    assert(first->values == std::vector<std::string>{"PING"});
+    assert(first->bytes_consumed == std::string("*1\r\n$4\r\nPING\r\n").size());
+
     const auto empty_bulk = miniredis::resp::parse_array("*2\r\n$4\r\nECHO\r\n$0\r\n\r\n");
     assert(empty_bulk.has_value());
     assert(*empty_bulk == (std::vector<std::string>{"ECHO", ""}));
