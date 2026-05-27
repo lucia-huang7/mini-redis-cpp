@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 namespace miniredis {
@@ -17,6 +18,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace miniredis
