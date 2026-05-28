@@ -16,7 +16,6 @@ add_library(miniredis
     src/resp.cpp
     src/server.cpp
     src/store.cpp
-    src/thread_pool.cpp
     src/ttl.cpp
 )
 

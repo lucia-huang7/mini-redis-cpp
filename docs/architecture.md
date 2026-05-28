@@ -18,9 +18,7 @@ Client
 
 Owns the listening socket, accepts client connections, reads requests, and writes RESP responses.
 
-First version: one thread per connection.
-
-Later version: acceptor thread plus worker thread pool.
+The current implementation uses a thread-per-connection model: the main thread accepts connections and each client connection is handled by a detached worker thread.
 
 ### RESP Parser
 
@@ -38,7 +36,7 @@ Supported values:
 
 Validates command arity, normalizes command names, calls the store, and returns RESP responses.
 
-Planned commands:
+Supported commands:
 
 - `PING`
 - `ECHO`
@@ -52,14 +50,14 @@ Planned commands:
 
 The in-memory key-value engine.
 
-The first implementation uses:
+The current implementation uses:
 
 ```cpp
 std::unordered_map<std::string, Value>
 std::shared_mutex
 ```
 
-Reads use shared locks. Writes use exclusive locks.
+All store operations currently take an exclusive lock. This keeps expiration cleanup and mutation simple while the server uses multiple client threads.
 
 ### TTL Manager
 
@@ -78,12 +76,13 @@ Append-only file persistence records mutating commands:
 
 On startup, the server replays the AOF file to rebuild the in-memory store.
 
-## Milestones
+## Current Capabilities
 
-1. RESP parser and encoder
-2. `PING` and `ECHO` over TCP
-3. `SET`, `GET`, and `DEL`
-4. `EXPIRE` and `TTL`
-5. AOF append and replay
-6. Concurrent clients
-7. Benchmarks and CI
+- RESP parser and encoder
+- TCP server compatible with `redis-cli`
+- `PING`, `ECHO`, `SET`, `GET`, `DEL`, `EXPIRE`, and `TTL`
+- Thread-safe in-memory store
+- Lazy expiration and background TTL cleanup
+- AOF append and startup replay
+- Thread-per-connection client handling
+- Single-process benchmark client with multi-client mode
