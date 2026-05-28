@@ -4,6 +4,7 @@
 #include "miniredis/command.hpp"
 #include "miniredis/resp.hpp"
 #include "miniredis/store.hpp"
+#include "miniredis/thread_pool.hpp"
 #include "miniredis/ttl.hpp"
 
 #include <array>
@@ -14,8 +15,8 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include <arpa/inet.h>
@@ -188,6 +189,7 @@ int Server::run() {
     CommandDispatcher dispatcher(store);
     Aof aof(config_.aof_path);
     TtlCleaner ttl_cleaner(store);
+    ThreadPool workers(config_.workers);
 
     try {
         const auto replayed = aof.replay(dispatcher);
@@ -200,7 +202,8 @@ int Server::run() {
     }
 
     ttl_cleaner.start();
-    std::cout << "Mini Redis listening on 0.0.0.0:" << config_.port << "\n";
+    std::cout << "Mini Redis listening on 0.0.0.0:" << config_.port
+              << " with " << workers.size() << " worker(s)\n";
 
     while (true) {
         sockaddr_in client_address{};
@@ -218,12 +221,14 @@ int Server::run() {
             continue;
         }
 
-        std::thread(
-            handle_client,
-            std::move(client_fd),
-            std::ref(dispatcher),
-            std::cref(aof))
-            .detach();
+        auto client = std::make_shared<SocketHandle>(std::move(client_fd));
+        try {
+            workers.enqueue([client, &dispatcher, &aof]() mutable {
+                handle_client(std::move(*client), dispatcher, aof);
+            });
+        } catch (const std::exception& error) {
+            std::cerr << "enqueue failed: " << error.what() << "\n";
+        }
     }
 }
 
