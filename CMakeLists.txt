@@ -45,6 +45,13 @@ if(MINI_REDIS_BUILD_TESTS)
     )
     target_link_libraries(miniredis_tests PRIVATE miniredis)
     add_test(NAME miniredis_tests COMMAND miniredis_tests)
+
+    add_executable(miniredis_integration_tests tests/integration_test.cpp)
+    target_link_libraries(miniredis_integration_tests PRIVATE miniredis)
+    add_test(
+        NAME miniredis_integration_tests
+        COMMAND miniredis_integration_tests $<TARGET_FILE:miniredis_server>
+    )
 endif()
 
 if(MINI_REDIS_BUILD_BENCHMARKS)
