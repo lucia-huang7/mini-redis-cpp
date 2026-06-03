@@ -8,6 +8,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MINI_REDIS_BUILD_TESTS "Build tests" ON)
 option(MINI_REDIS_BUILD_BENCHMARKS "Build benchmark client" ON)
+option(MINI_REDIS_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+
+if(MINI_REDIS_ENABLE_SANITIZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+    else()
+        message(WARNING "Sanitizers are only configured for Clang and GCC")
+    endif()
+endif()
 
 add_library(miniredis
     src/aof.cpp
@@ -41,6 +51,7 @@ if(MINI_REDIS_BUILD_TESTS)
         tests/resp_test.cpp
         tests/store_test.cpp
         tests/test_main.cpp
+        tests/thread_pool_test.cpp
         tests/ttl_test.cpp
     )
     target_link_libraries(miniredis_tests PRIVATE miniredis)

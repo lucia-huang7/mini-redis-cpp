@@ -7,12 +7,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debug
+            build_type: Debug
+            cmake_args: ""
+          - name: Release
+            build_type: Release
+            cmake_args: ""
+          - name: ASan UBSan
+            build_type: Debug
+            cmake_args: "-DMINI_REDIS_ENABLE_SANITIZERS=ON"
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_args }}
 
       - name: Build
         run: cmake --build build --parallel

@@ -5,6 +5,7 @@ void aof_append_replay_test();
 void aof_replay_truncates_incomplete_tail_test();
 void resp_encoder_test();
 void store_set_get_test();
+void thread_pool_runs_enqueued_tasks_test();
 void ttl_cleaner_removes_expired_keys_test();
 
 int main() {
@@ -13,6 +14,7 @@ int main() {
     command_dispatcher_ping_test();
     aof_append_replay_test();
     aof_replay_truncates_incomplete_tail_test();
+    thread_pool_runs_enqueued_tasks_test();
     ttl_cleaner_removes_expired_keys_test();
     std::cout << "All tests passed\n";
     return 0;
