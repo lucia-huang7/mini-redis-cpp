@@ -7,8 +7,15 @@ Recorded commands:
 - `SET`
 - `DEL`
 - `EXPIRE`
+- `INCR`
+- `DECR`
 
-Read-only commands such as `GET`, `TTL`, `PING`, and `ECHO` are not recorded.
+Read-only commands such as `GET`, `MGET`, `EXISTS`, `TTL`, `PING`, and `ECHO`
+are not recorded.
+
+Conditional writes are recorded only when they change state. For example,
+`SET key value NX` is appended only if the key did not already exist and the
+server returned `+OK`.
 
 ## Durability Policy
 

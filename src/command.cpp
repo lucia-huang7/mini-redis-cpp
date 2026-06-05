@@ -38,6 +38,49 @@ std::optional<long long> parse_integer(const std::string& value) {
     }
 }
 
+std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string>& command) {
+    Store::SetOptions options;
+
+    for (std::size_t i = 3; i < command.size(); ++i) {
+        const auto option = normalize_command(command[i]);
+        if (option == "NX") {
+            if (options.condition != Store::SetCondition::Always) {
+                return std::nullopt;
+            }
+            options.condition = Store::SetCondition::IfNotExists;
+            continue;
+        }
+        if (option == "XX") {
+            if (options.condition != Store::SetCondition::Always) {
+                return std::nullopt;
+            }
+            options.condition = Store::SetCondition::IfExists;
+            continue;
+        }
+        if (option == "EX" || option == "PX") {
+            if (options.ttl.has_value() || i + 1 >= command.size()) {
+                return std::nullopt;
+            }
+
+            const auto ttl = parse_integer(command[++i]);
+            if (!ttl.has_value() || *ttl <= 0) {
+                return std::nullopt;
+            }
+
+            if (option == "EX") {
+                options.ttl = std::chrono::seconds(*ttl);
+            } else {
+                options.ttl = std::chrono::milliseconds(*ttl);
+            }
+            continue;
+        }
+
+        return std::nullopt;
+    }
+
+    return options;
+}
+
 }  // namespace
 
 CommandDispatcher::CommandDispatcher(Store& store) : store_(store) {}
@@ -67,10 +110,18 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
     }
 
     if (name == "SET") {
-        if (command.size() != 3) {
+        if (command.size() < 3) {
             return wrong_arity("set");
         }
-        store_.set(command[1], command[2]);
+
+        const auto options = parse_set_options(command);
+        if (!options.has_value()) {
+            return resp::error("ERR syntax error");
+        }
+
+        if (!store_.set(command[1], command[2], *options)) {
+            return resp::null_bulk_string();
+        }
         return resp::simple_string("OK");
     }
 
@@ -83,6 +134,22 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
             return resp::null_bulk_string();
         }
         return resp::bulk_string(*value);
+    }
+
+    if (name == "MGET") {
+        if (command.size() < 2) {
+            return wrong_arity("mget");
+        }
+        std::vector<std::string> keys(command.begin() + 1, command.end());
+        return resp::bulk_array(store_.mget(keys));
+    }
+
+    if (name == "EXISTS") {
+        if (command.size() < 2) {
+            return wrong_arity("exists");
+        }
+        std::vector<std::string> keys(command.begin() + 1, command.end());
+        return resp::integer(static_cast<long long>(store_.exists(keys)));
     }
 
     if (name == "DEL") {
@@ -116,6 +183,21 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
             return resp::integer(-2);
         }
         return resp::integer(*remaining);
+    }
+
+    if (name == "INCR" || name == "DECR") {
+        if (command.size() != 2) {
+            return wrong_arity(name == "INCR" ? "incr" : "decr");
+        }
+
+        try {
+            const auto delta = name == "INCR" ? 1 : -1;
+            return resp::integer(store_.increment(command[1], delta));
+        } catch (const std::invalid_argument&) {
+            return resp::error("ERR value is not an integer or out of range");
+        } catch (const std::out_of_range&) {
+            return resp::error("ERR increment or decrement would overflow");
+        }
     }
 
     return resp::error("ERR unknown command");

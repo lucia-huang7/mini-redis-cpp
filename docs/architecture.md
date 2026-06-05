@@ -44,9 +44,17 @@ Supported commands:
 - `ECHO`
 - `SET`
 - `GET`
+- `MGET`
+- `EXISTS`
 - `DEL`
 - `EXPIRE`
 - `TTL`
+- `INCR`
+- `DECR`
+
+`SET` supports Redis-style `EX`, `PX`, `NX`, and `XX` options. The dispatcher
+keeps parsing and arity validation separate from store mutation so command
+semantics are testable without a network server.
 
 ### Store
 
@@ -59,7 +67,10 @@ std::unordered_map<std::string, Value>
 std::shared_mutex
 ```
 
-All store operations currently take an exclusive lock. This keeps expiration cleanup and mutation simple while the server uses multiple client threads.
+Read-heavy operations such as `GET` and `TTL` first take a shared lock. If they
+observe an expired key, they release the read lock and clean it up through a
+short exclusive path. Mutating operations such as `SET`, `DEL`, `EXPIRE`, and
+`INCR` take an exclusive lock for atomicity.
 
 ### TTL Manager
 
@@ -75,6 +86,8 @@ Append-only file persistence records mutating commands:
 - `SET`
 - `DEL`
 - `EXPIRE`
+- `INCR`
+- `DECR`
 
 On startup, the server replays the AOF file to rebuild the in-memory store. The AOF file remains open during runtime, supports configurable `fsync` policy, and truncates incomplete/corrupt tails during replay.
 
@@ -84,7 +97,7 @@ See `docs/persistence.md` for durability policy and TTL persistence tradeoffs.
 
 - RESP parser and encoder
 - TCP server compatible with `redis-cli`
-- `PING`, `ECHO`, `SET`, `GET`, `DEL`, `EXPIRE`, and `TTL`
+- `PING`, `ECHO`, `SET`, `GET`, `MGET`, `EXISTS`, `DEL`, `EXPIRE`, `TTL`, `INCR`, and `DECR`
 - Thread-safe in-memory store
 - Lazy expiration and background TTL cleanup
 - AOF append and startup replay

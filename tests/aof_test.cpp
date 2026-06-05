@@ -16,15 +16,18 @@ void aof_append_replay_test() {
         aof.append(miniredis::resp::array({"SET", "name", "alice"}));
         aof.append(miniredis::resp::array({"SET", "city", "chicago"}));
         aof.append(miniredis::resp::array({"DEL", "city"}));
+        aof.append(miniredis::resp::array({"INCR", "visits"}));
+        aof.append(miniredis::resp::array({"INCR", "visits"}));
     }
 
     miniredis::Store store;
     miniredis::CommandDispatcher dispatcher(store);
     miniredis::Aof aof(path);
 
-    assert(aof.replay(dispatcher) == 3);
+    assert(aof.replay(dispatcher) == 5);
     assert(store.get("name") == "alice");
     assert(!store.get("city").has_value());
+    assert(store.get("visits") == "2");
 
     std::filesystem::remove(path);
 }

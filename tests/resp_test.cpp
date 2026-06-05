@@ -1,11 +1,14 @@
 #include "miniredis/resp.hpp"
 
 #include <cassert>
+#include <optional>
 
 void resp_encoder_test() {
     assert(miniredis::resp::simple_string("OK") == "+OK\r\n");
     assert(miniredis::resp::array({"PING"}) == "*1\r\n$4\r\nPING\r\n");
     assert(miniredis::resp::array({"SET", "name", "alice"}) == "*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$5\r\nalice\r\n");
+    assert(miniredis::resp::bulk_array(std::vector<std::optional<std::string>>{"alice", std::nullopt}) ==
+           "*2\r\n$5\r\nalice\r\n$-1\r\n");
     assert(miniredis::resp::bulk_string("hello") == "$5\r\nhello\r\n");
     assert(miniredis::resp::null_bulk_string() == "$-1\r\n");
 

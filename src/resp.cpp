@@ -117,6 +117,14 @@ std::string array(const std::vector<std::string>& values) {
     return output;
 }
 
+std::string bulk_array(const std::vector<std::optional<std::string>>& values) {
+    std::string output = "*" + std::to_string(values.size()) + "\r\n";
+    for (const auto& value : values) {
+        output += value.has_value() ? bulk_string(*value) : null_bulk_string();
+    }
+    return output;
+}
+
 std::string simple_string(const std::string& value) {
     return "+" + value + "\r\n";
 }
