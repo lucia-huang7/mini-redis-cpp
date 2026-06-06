@@ -72,10 +72,14 @@ and AOF replay.
   --port 6380 \
   --requests 4000 \
   --clients 4 \
+  --pipeline 32 \
   --command SETGET
 ```
 
 The benchmark reports throughput, average latency, and p50/p95/p99 latency.
+`--pipeline` controls how many requests each client sends before reading the
+matching responses; values such as 16, 32, or 64 are useful for measuring server
+throughput without making one TCP round trip per command.
 See [docs/benchmark.md](docs/benchmark.md) for sample local baseline numbers.
 
 ## Durability

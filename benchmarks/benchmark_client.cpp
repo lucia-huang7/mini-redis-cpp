@@ -25,6 +25,7 @@ struct Options {
     std::uint16_t port = 6379;
     std::size_t requests = 10000;
     std::size_t clients = 1;
+    std::size_t pipeline = 1;
     std::string command = "PING";
 };
 
@@ -84,6 +85,8 @@ Options parse_options(int argc, char** argv) {
             options.requests = static_cast<std::size_t>(std::stoull(argv[++i]));
         } else if (arg == "--clients" && i + 1 < argc) {
             options.clients = static_cast<std::size_t>(std::stoull(argv[++i]));
+        } else if (arg == "--pipeline" && i + 1 < argc) {
+            options.pipeline = static_cast<std::size_t>(std::stoull(argv[++i]));
         } else if (arg == "--command" && i + 1 < argc) {
             options.command = argv[++i];
         } else {
@@ -96,6 +99,9 @@ Options parse_options(int argc, char** argv) {
     }
     if (options.clients == 0) {
         throw std::runtime_error("clients must be greater than zero");
+    }
+    if (options.pipeline == 0) {
+        throw std::runtime_error("pipeline must be greater than zero");
     }
 
     return options;
@@ -165,7 +171,7 @@ std::size_t expected_response_size(std::string_view buffer) {
 }
 
 void read_response(int fd, std::string& buffer, std::size_t& consumed) {
-    char chunk[4096];
+    char chunk[16384];
 
     while (true) {
         const auto pending = std::string_view(buffer).substr(consumed);
@@ -203,23 +209,45 @@ std::string request_for(const std::string& command, std::size_t index) {
     throw std::runtime_error("unsupported command; use PING or SETGET");
 }
 
+void append_request_for(std::string& output, const std::string& command, std::size_t index) {
+    if (command == "PING") {
+        output.append("*1\r\n$4\r\nPING\r\n");
+        return;
+    }
+
+    output.append(request_for(command, index));
+}
+
 WorkerResult run_worker(const Options& options, std::size_t client_index, std::size_t requests) {
     auto fd = connect_to_server(options);
     std::string response_buffer;
-    response_buffer.reserve(8192);
+    response_buffer.reserve(65536);
     std::size_t response_consumed = 0;
+    std::string request_buffer;
+    request_buffer.reserve(options.pipeline * 64);
     std::vector<double> latencies_ms;
     latencies_ms.reserve(requests);
 
     const auto started = std::chrono::steady_clock::now();
-    for (std::size_t i = 0; i < requests; ++i) {
-        const auto request_index = client_index * requests + i;
+    for (std::size_t i = 0; i < requests;) {
+        const auto batch_size = std::min(options.pipeline, requests - i);
+        request_buffer.clear();
+        for (std::size_t j = 0; j < batch_size; ++j) {
+            append_request_for(request_buffer, options.command, client_index * requests + i + j);
+        }
+
         const auto request_started = std::chrono::steady_clock::now();
-        send_all(fd.get(), request_for(options.command, request_index));
-        read_response(fd.get(), response_buffer, response_consumed);
+        send_all(fd.get(), request_buffer);
+        for (std::size_t j = 0; j < batch_size; ++j) {
+            read_response(fd.get(), response_buffer, response_consumed);
+        }
         const auto request_finished = std::chrono::steady_clock::now();
-        latencies_ms.push_back(
-            std::chrono::duration<double, std::milli>(request_finished - request_started).count());
+        const auto batch_latency_ms =
+            std::chrono::duration<double, std::milli>(request_finished - request_started).count();
+        for (std::size_t j = 0; j < batch_size; ++j) {
+            latencies_ms.push_back(batch_latency_ms);
+        }
+        i += batch_size;
     }
     const auto finished = std::chrono::steady_clock::now();
 
@@ -243,7 +271,7 @@ double percentile(const std::vector<double>& values, double percentile) {
 void print_usage() {
     std::cerr
         << "Usage: miniredis_benchmark [--host 127.0.0.1] [--port 6379] "
-        << "[--requests 10000] [--clients 1] [--command PING|SETGET]\n";
+        << "[--requests 10000] [--clients 1] [--pipeline 1] [--command PING|SETGET]\n";
 }
 
 }  // namespace
@@ -303,6 +331,7 @@ int main(int argc, char** argv) {
         std::cout << "Command: " << options.command << "\n";
         std::cout << "Requests: " << options.requests << "\n";
         std::cout << "Clients: " << options.clients << "\n";
+        std::cout << "Pipeline: " << options.pipeline << "\n";
         std::cout << "Total time: " << elapsed << " sec\n";
         std::cout << "Throughput: " << throughput << " req/sec\n";
         std::cout << "Average latency: " << avg_latency_ms << " ms\n";

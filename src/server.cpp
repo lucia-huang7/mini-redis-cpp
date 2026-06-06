@@ -99,7 +99,7 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
 
     const auto name = std::string_view(command.front());
     if (equals_ci(name, "SET")) {
-        return response == resp::simple_string("OK");
+        return response == "+OK\r\n";
     }
     if (equals_ci(name, "INCR") || equals_ci(name, "DECR")) {
         return response.front() == ':';
@@ -118,10 +118,10 @@ void configure_client_socket(int fd) {
 
 void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const Aof* aof) {
     std::string buffer;
-    buffer.reserve(8192);
+    buffer.reserve(65536);
     std::string output;
-    output.reserve(8192);
-    std::array<char, 4096> chunk{};
+    output.reserve(65536);
+    std::array<char, 16384> chunk{};
 
     while (true) {
         const auto bytes_read = ::recv(client_fd.get(), chunk.data(), chunk.size(), 0);
