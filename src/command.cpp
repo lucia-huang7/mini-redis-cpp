@@ -8,15 +8,22 @@
 #include <chrono>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 
 namespace miniredis {
 namespace {
 
-std::string normalize_command(std::string name) {
-    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return name;
+bool equals_ci(std::string_view value, std::string_view expected) {
+    if (value.size() != expected.size()) {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (static_cast<char>(std::toupper(static_cast<unsigned char>(value[i]))) != expected[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::string wrong_arity(const std::string& command) {
@@ -42,22 +49,22 @@ std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string
     Store::SetOptions options;
 
     for (std::size_t i = 3; i < command.size(); ++i) {
-        const auto option = normalize_command(command[i]);
-        if (option == "NX") {
+        const auto option = std::string_view(command[i]);
+        if (equals_ci(option, "NX")) {
             if (options.condition != Store::SetCondition::Always) {
                 return std::nullopt;
             }
             options.condition = Store::SetCondition::IfNotExists;
             continue;
         }
-        if (option == "XX") {
+        if (equals_ci(option, "XX")) {
             if (options.condition != Store::SetCondition::Always) {
                 return std::nullopt;
             }
             options.condition = Store::SetCondition::IfExists;
             continue;
         }
-        if (option == "EX" || option == "PX") {
+        if (equals_ci(option, "EX") || equals_ci(option, "PX")) {
             if (options.ttl.has_value() || i + 1 >= command.size()) {
                 return std::nullopt;
             }
@@ -67,7 +74,7 @@ std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string
                 return std::nullopt;
             }
 
-            if (option == "EX") {
+            if (equals_ci(option, "EX")) {
                 options.ttl = std::chrono::seconds(*ttl);
             } else {
                 options.ttl = std::chrono::milliseconds(*ttl);
@@ -90,9 +97,9 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::error("ERR empty command");
     }
 
-    const auto name = normalize_command(command.front());
+    const auto name = std::string_view(command.front());
 
-    if (name == "PING") {
+    if (equals_ci(name, "PING")) {
         if (command.size() > 2) {
             return wrong_arity("ping");
         }
@@ -102,14 +109,14 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::simple_string("PONG");
     }
 
-    if (name == "ECHO") {
+    if (equals_ci(name, "ECHO")) {
         if (command.size() != 2) {
             return wrong_arity("echo");
         }
         return resp::bulk_string(command[1]);
     }
 
-    if (name == "SET") {
+    if (equals_ci(name, "SET")) {
         if (command.size() < 3) {
             return wrong_arity("set");
         }
@@ -125,7 +132,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::simple_string("OK");
     }
 
-    if (name == "GET") {
+    if (equals_ci(name, "GET")) {
         if (command.size() != 2) {
             return wrong_arity("get");
         }
@@ -136,7 +143,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::bulk_string(*value);
     }
 
-    if (name == "MGET") {
+    if (equals_ci(name, "MGET")) {
         if (command.size() < 2) {
             return wrong_arity("mget");
         }
@@ -144,7 +151,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::bulk_array(store_.mget(keys));
     }
 
-    if (name == "EXISTS") {
+    if (equals_ci(name, "EXISTS")) {
         if (command.size() < 2) {
             return wrong_arity("exists");
         }
@@ -152,14 +159,14 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::integer(static_cast<long long>(store_.exists(keys)));
     }
 
-    if (name == "DEL") {
+    if (equals_ci(name, "DEL")) {
         if (command.size() != 2) {
             return wrong_arity("del");
         }
         return resp::integer(store_.del(command[1]) ? 1 : 0);
     }
 
-    if (name == "EXPIRE") {
+    if (equals_ci(name, "EXPIRE")) {
         if (command.size() != 3) {
             return wrong_arity("expire");
         }
@@ -173,7 +180,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::integer(updated ? 1 : 0);
     }
 
-    if (name == "TTL") {
+    if (equals_ci(name, "TTL")) {
         if (command.size() != 2) {
             return wrong_arity("ttl");
         }
@@ -185,13 +192,13 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         return resp::integer(*remaining);
     }
 
-    if (name == "INCR" || name == "DECR") {
+    if (equals_ci(name, "INCR") || equals_ci(name, "DECR")) {
         if (command.size() != 2) {
-            return wrong_arity(name == "INCR" ? "incr" : "decr");
+            return wrong_arity(equals_ci(name, "INCR") ? "incr" : "decr");
         }
 
         try {
-            const auto delta = name == "INCR" ? 1 : -1;
+            const auto delta = equals_ci(name, "INCR") ? 1 : -1;
             return resp::integer(store_.increment(command[1], delta));
         } catch (const std::invalid_argument&) {
             return resp::error("ERR value is not an integer or out of range");

@@ -133,11 +133,11 @@ void send_all(int fd, const std::string& request) {
     }
 }
 
-std::size_t find_line_end(const std::string& buffer, std::size_t start = 0) {
+std::size_t find_line_end(std::string_view buffer, std::size_t start = 0) {
     return buffer.find("\r\n", start);
 }
 
-std::size_t expected_response_size(const std::string& buffer) {
+std::size_t expected_response_size(std::string_view buffer) {
     if (buffer.empty()) {
         return 0;
     }
@@ -153,7 +153,7 @@ std::size_t expected_response_size(const std::string& buffer) {
         case ':':
             return line_end + 2;
         case '$': {
-            const auto len = std::stoll(buffer.substr(1, line_end - 1));
+            const auto len = std::stoll(std::string(buffer.substr(1, line_end - 1)));
             if (len < 0) {
                 return line_end + 2;
             }
@@ -164,13 +164,18 @@ std::size_t expected_response_size(const std::string& buffer) {
     }
 }
 
-void read_response(int fd, std::string& buffer) {
+void read_response(int fd, std::string& buffer, std::size_t& consumed) {
     char chunk[4096];
 
     while (true) {
-        const auto expected = expected_response_size(buffer);
-        if (expected > 0 && buffer.size() >= expected) {
-            buffer.erase(0, expected);
+        const auto pending = std::string_view(buffer).substr(consumed);
+        const auto expected = expected_response_size(pending);
+        if (expected > 0 && pending.size() >= expected) {
+            consumed += expected;
+            if (consumed > 4096 && consumed * 2 >= buffer.size()) {
+                buffer.erase(0, consumed);
+                consumed = 0;
+            }
             return;
         }
 
@@ -201,6 +206,8 @@ std::string request_for(const std::string& command, std::size_t index) {
 WorkerResult run_worker(const Options& options, std::size_t client_index, std::size_t requests) {
     auto fd = connect_to_server(options);
     std::string response_buffer;
+    response_buffer.reserve(8192);
+    std::size_t response_consumed = 0;
     std::vector<double> latencies_ms;
     latencies_ms.reserve(requests);
 
@@ -209,7 +216,7 @@ WorkerResult run_worker(const Options& options, std::size_t client_index, std::s
         const auto request_index = client_index * requests + i;
         const auto request_started = std::chrono::steady_clock::now();
         send_all(fd.get(), request_for(options.command, request_index));
-        read_response(fd.get(), response_buffer);
+        read_response(fd.get(), response_buffer, response_consumed);
         const auto request_finished = std::chrono::steady_clock::now();
         latencies_ms.push_back(
             std::chrono::duration<double, std::milli>(request_finished - request_started).count());

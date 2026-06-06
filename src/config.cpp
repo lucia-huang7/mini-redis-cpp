@@ -34,7 +34,10 @@ Config parse_config(int argc, char** argv) {
         if (arg == "--port" && i + 1 < argc) {
             config.port = static_cast<std::uint16_t>(std::atoi(argv[++i]));
         } else if (arg == "--aof" && i + 1 < argc) {
-            config.aof_path = argv[++i];
+            const std::string path = argv[++i];
+            config.aof_path = path.empty()
+                ? std::optional<std::filesystem::path>{}
+                : std::optional<std::filesystem::path>{path};
         } else if (arg == "--appendfsync" && i + 1 < argc) {
             config.appendfsync = parse_appendfsync(argv[++i]);
         } else if (arg == "--workers" && i + 1 < argc) {

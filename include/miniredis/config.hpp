@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 
 #include "miniredis/aof.hpp"
 
@@ -10,7 +11,7 @@ namespace miniredis {
 
 struct Config {
     std::uint16_t port = 6379;
-    std::filesystem::path aof_path = "data/appendonly.aof";
+    std::optional<std::filesystem::path> aof_path = std::filesystem::path("data/appendonly.aof");
     AofSyncPolicy appendfsync = AofSyncPolicy::EverySec;
     std::size_t workers = 0;
 };
