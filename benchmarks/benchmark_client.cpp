@@ -200,21 +200,12 @@ void read_response(int fd, std::string& buffer, std::size_t& consumed) {
     }
 }
 
-std::string request_for(const Options& options, std::size_t index) {
-    const auto& command = options.command;
-    if (command == "PING") {
-        return miniredis::resp::array({"PING"});
-    }
-
-    if (command == "SETGET") {
-        const auto key = "bench:" + std::to_string(index % options.keyspace);
-        if (index % 2 == 0) {
-            return miniredis::resp::array({"SET", key, std::to_string(index)});
-        }
-        return miniredis::resp::array({"GET", key});
-    }
-
-    throw std::runtime_error("unsupported command; use PING or SETGET");
+void append_bulk(std::string& output, std::string_view value) {
+    output.push_back('$');
+    output.append(std::to_string(value.size()));
+    output.append("\r\n");
+    output.append(value);
+    output.append("\r\n");
 }
 
 void append_request_for(std::string& output, const Options& options, std::size_t index) {
@@ -224,7 +215,23 @@ void append_request_for(std::string& output, const Options& options, std::size_t
         return;
     }
 
-    output.append(request_for(options, index));
+    if (command == "SETGET") {
+        const auto key = "bench:" + std::to_string(index % options.keyspace);
+        if (index % 2 == 0) {
+            const auto value = std::to_string(index);
+            output.append("*3\r\n");
+            append_bulk(output, "SET");
+            append_bulk(output, key);
+            append_bulk(output, value);
+        } else {
+            output.append("*2\r\n");
+            append_bulk(output, "GET");
+            append_bulk(output, key);
+        }
+        return;
+    }
+
+    throw std::runtime_error("unsupported command; use PING or SETGET");
 }
 
 WorkerResult run_worker(const Options& options, std::size_t client_index, std::size_t requests) {

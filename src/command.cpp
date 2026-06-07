@@ -4,6 +4,7 @@
 #include "miniredis/store.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <chrono>
 #include <optional>
@@ -30,22 +31,18 @@ std::string wrong_arity(const std::string& command) {
     return resp::error("ERR wrong number of arguments for '" + command + "' command");
 }
 
-std::optional<long long> parse_integer(const std::string& value) {
-    try {
-        std::size_t parsed = 0;
-        const auto result = std::stoll(value, &parsed);
-        if (parsed != value.size()) {
-            return std::nullopt;
-        }
-        return result;
-    } catch (const std::invalid_argument&) {
-        return std::nullopt;
-    } catch (const std::out_of_range&) {
+std::optional<long long> parse_integer(std::string_view value) {
+    long long result = 0;
+    const auto* begin = value.data();
+    const auto* end = value.data() + value.size();
+    const auto parsed = std::from_chars(begin, end, result);
+    if (parsed.ec != std::errc{} || parsed.ptr != end) {
         return std::nullopt;
     }
+    return result;
 }
 
-std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string>& command) {
+std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string_view>& command) {
     Store::SetOptions options;
 
     for (std::size_t i = 3; i < command.size(); ++i) {
@@ -93,27 +90,36 @@ std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string
 CommandDispatcher::CommandDispatcher(Store& store) : store_(store) {}
 
 std::string CommandDispatcher::execute(const std::vector<std::string>& command) {
+    std::vector<std::string_view> view_command;
+    view_command.reserve(command.size());
+    for (const auto& value : command) {
+        view_command.emplace_back(value);
+    }
+    return execute(view_command);
+}
+
+std::string CommandDispatcher::execute(const std::vector<std::string_view>& command) {
     if (command.empty()) {
         return resp::error("ERR empty command");
     }
 
-    const auto name = std::string_view(command.front());
+    const auto name = command.front();
 
     if (equals_ci(name, "PING")) {
         if (command.size() > 2) {
             return wrong_arity("ping");
         }
         if (command.size() == 2) {
-            return resp::bulk_string(command[1]);
+            return "$" + std::to_string(command[1].size()) + "\r\n" + std::string(command[1]) + "\r\n";
         }
-        return resp::simple_string("PONG");
+        return "+PONG\r\n";
     }
 
     if (equals_ci(name, "ECHO")) {
         if (command.size() != 2) {
             return wrong_arity("echo");
         }
-        return resp::bulk_string(command[1]);
+        return "$" + std::to_string(command[1].size()) + "\r\n" + std::string(command[1]) + "\r\n";
     }
 
     if (equals_ci(name, "SET")) {
@@ -126,17 +132,17 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
             return resp::error("ERR syntax error");
         }
 
-        if (!store_.set(command[1], command[2], *options)) {
+        if (!store_.set(std::string(command[1]), std::string(command[2]), *options)) {
             return resp::null_bulk_string();
         }
-        return resp::simple_string("OK");
+        return "+OK\r\n";
     }
 
     if (equals_ci(name, "GET")) {
         if (command.size() != 2) {
             return wrong_arity("get");
         }
-        const auto value = store_.get(command[1]);
+        const auto value = store_.get(std::string(command[1]));
         if (!value.has_value()) {
             return resp::null_bulk_string();
         }
@@ -163,7 +169,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
         if (command.size() != 2) {
             return wrong_arity("del");
         }
-        return resp::integer(store_.del(command[1]) ? 1 : 0);
+        return resp::integer(store_.del(std::string(command[1])) ? 1 : 0);
     }
 
     if (equals_ci(name, "EXPIRE")) {
@@ -176,7 +182,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
             return resp::error("ERR value is not an integer or out of range");
         }
 
-        const auto updated = store_.expire(command[1], std::chrono::seconds(*seconds));
+        const auto updated = store_.expire(std::string(command[1]), std::chrono::seconds(*seconds));
         return resp::integer(updated ? 1 : 0);
     }
 
@@ -185,7 +191,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
             return wrong_arity("ttl");
         }
 
-        const auto remaining = store_.ttl(command[1]);
+        const auto remaining = store_.ttl(std::string(command[1]));
         if (!remaining.has_value()) {
             return resp::integer(-2);
         }
@@ -199,7 +205,7 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
 
         try {
             const auto delta = equals_ci(name, "INCR") ? 1 : -1;
-            return resp::integer(store_.increment(command[1], delta));
+            return resp::integer(store_.increment(std::string(command[1]), delta));
         } catch (const std::invalid_argument&) {
             return resp::error("ERR value is not an integer or out of range");
         } catch (const std::out_of_range&) {
