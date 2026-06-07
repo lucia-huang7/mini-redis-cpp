@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -43,8 +44,17 @@ private:
     bool is_expired(const Value& value) const;
     void erase_if_expired(const std::string& key);
 
-    std::unordered_map<std::string, Value> values_;
-    mutable std::shared_mutex mutex_;
+    struct Shard {
+        std::unordered_map<std::string, Value> values;
+        mutable std::shared_mutex mutex;
+    };
+
+    static constexpr std::size_t kShardCount = 64;
+
+    Shard& shard_for(const std::string& key);
+    const Shard& shard_for(const std::string& key) const;
+
+    std::array<Shard, kShardCount> shards_;
 };
 
 }  // namespace miniredis
