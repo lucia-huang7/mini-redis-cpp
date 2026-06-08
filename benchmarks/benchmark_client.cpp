@@ -1,12 +1,15 @@
 #include "miniredis/resp.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -21,7 +24,14 @@ struct Options {
     std::string host = "127.0.0.1";
     std::uint16_t port = 6379;
     std::size_t requests = 10000;
+    std::size_t clients = 1;
     std::string command = "PING";
+};
+
+struct WorkerResult {
+    std::size_t requests = 0;
+    double elapsed_seconds = 0.0;
+    std::vector<double> latencies_ms;
 };
 
 class SocketHandle {
@@ -72,11 +82,20 @@ Options parse_options(int argc, char** argv) {
             options.port = static_cast<std::uint16_t>(std::stoi(argv[++i]));
         } else if (arg == "--requests" && i + 1 < argc) {
             options.requests = static_cast<std::size_t>(std::stoull(argv[++i]));
+        } else if (arg == "--clients" && i + 1 < argc) {
+            options.clients = static_cast<std::size_t>(std::stoull(argv[++i]));
         } else if (arg == "--command" && i + 1 < argc) {
             options.command = argv[++i];
         } else {
             throw std::runtime_error("unknown or incomplete argument");
         }
+    }
+
+    if (options.requests == 0) {
+        throw std::runtime_error("requests must be greater than zero");
+    }
+    if (options.clients == 0) {
+        throw std::runtime_error("clients must be greater than zero");
     }
 
     return options;
@@ -179,10 +198,45 @@ std::string request_for(const std::string& command, std::size_t index) {
     throw std::runtime_error("unsupported command; use PING or SETGET");
 }
 
+WorkerResult run_worker(const Options& options, std::size_t client_index, std::size_t requests) {
+    auto fd = connect_to_server(options);
+    std::string response_buffer;
+    std::vector<double> latencies_ms;
+    latencies_ms.reserve(requests);
+
+    const auto started = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < requests; ++i) {
+        const auto request_index = client_index * requests + i;
+        const auto request_started = std::chrono::steady_clock::now();
+        send_all(fd.get(), request_for(options.command, request_index));
+        read_response(fd.get(), response_buffer);
+        const auto request_finished = std::chrono::steady_clock::now();
+        latencies_ms.push_back(
+            std::chrono::duration<double, std::milli>(request_finished - request_started).count());
+    }
+    const auto finished = std::chrono::steady_clock::now();
+
+    return WorkerResult{
+        requests,
+        std::chrono::duration<double>(finished - started).count(),
+        std::move(latencies_ms),
+    };
+}
+
+double percentile(const std::vector<double>& values, double percentile) {
+    if (values.empty()) {
+        return 0.0;
+    }
+
+    const auto index = static_cast<std::size_t>(
+        (percentile / 100.0) * static_cast<double>(values.size() - 1));
+    return values[index];
+}
+
 void print_usage() {
     std::cerr
         << "Usage: miniredis_benchmark [--host 127.0.0.1] [--port 6379] "
-        << "[--requests 10000] [--command PING|SETGET]\n";
+        << "[--requests 10000] [--clients 1] [--command PING|SETGET]\n";
 }
 
 }  // namespace
@@ -190,25 +244,64 @@ void print_usage() {
 int main(int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
-        auto fd = connect_to_server(options);
-        std::string response_buffer;
+        std::vector<std::thread> workers;
+        std::vector<WorkerResult> results(options.clients);
+        std::vector<std::exception_ptr> errors(options.clients);
+
+        const auto base_requests = options.requests / options.clients;
+        const auto extra_requests = options.requests % options.clients;
 
         const auto started = std::chrono::steady_clock::now();
-        for (std::size_t i = 0; i < options.requests; ++i) {
-            send_all(fd.get(), request_for(options.command, i));
-            read_response(fd.get(), response_buffer);
+        for (std::size_t i = 0; i < options.clients; ++i) {
+            const auto worker_requests = base_requests + (i < extra_requests ? 1 : 0);
+            workers.emplace_back([&, i, worker_requests]() {
+                try {
+                    results[i] = run_worker(options, i, worker_requests);
+                } catch (...) {
+                    errors[i] = std::current_exception();
+                }
+            });
+        }
+
+        for (auto& worker : workers) {
+            worker.join();
+        }
+
+        for (const auto& error : errors) {
+            if (error) {
+                std::rethrow_exception(error);
+            }
         }
         const auto finished = std::chrono::steady_clock::now();
 
         const auto elapsed = std::chrono::duration<double>(finished - started).count();
         const auto throughput = static_cast<double>(options.requests) / elapsed;
-        const auto avg_latency_ms = (elapsed * 1000.0) / static_cast<double>(options.requests);
+        std::vector<double> latencies_ms;
+        latencies_ms.reserve(options.requests);
+        for (const auto& result : results) {
+            latencies_ms.insert(
+                latencies_ms.end(),
+                result.latencies_ms.begin(),
+                result.latencies_ms.end());
+        }
+
+        std::sort(latencies_ms.begin(), latencies_ms.end());
+
+        double total_latency_ms = 0.0;
+        for (const auto latency : latencies_ms) {
+            total_latency_ms += latency;
+        }
+        const auto avg_latency_ms = total_latency_ms / static_cast<double>(latencies_ms.size());
 
         std::cout << "Command: " << options.command << "\n";
         std::cout << "Requests: " << options.requests << "\n";
+        std::cout << "Clients: " << options.clients << "\n";
         std::cout << "Total time: " << elapsed << " sec\n";
         std::cout << "Throughput: " << throughput << " req/sec\n";
         std::cout << "Average latency: " << avg_latency_ms << " ms\n";
+        std::cout << "p50 latency: " << percentile(latencies_ms, 50.0) << " ms\n";
+        std::cout << "p95 latency: " << percentile(latencies_ms, 95.0) << " ms\n";
+        std::cout << "p99 latency: " << percentile(latencies_ms, 99.0) << " ms\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "error: " << error.what() << "\n";
