@@ -114,20 +114,53 @@ void send_all(int fd, const std::string& request) {
     }
 }
 
-std::string read_response(int fd) {
-    std::string response;
-    char buffer[4096];
+std::size_t find_line_end(const std::string& buffer, std::size_t start = 0) {
+    return buffer.find("\r\n", start);
+}
+
+std::size_t expected_response_size(const std::string& buffer) {
+    if (buffer.empty()) {
+        return 0;
+    }
+
+    const auto line_end = find_line_end(buffer);
+    if (line_end == std::string::npos) {
+        return 0;
+    }
+
+    switch (buffer.front()) {
+        case '+':
+        case '-':
+        case ':':
+            return line_end + 2;
+        case '$': {
+            const auto len = std::stoll(buffer.substr(1, line_end - 1));
+            if (len < 0) {
+                return line_end + 2;
+            }
+            return line_end + 2 + static_cast<std::size_t>(len) + 2;
+        }
+        default:
+            throw std::runtime_error("invalid RESP response");
+    }
+}
+
+void read_response(int fd, std::string& buffer) {
+    char chunk[4096];
 
     while (true) {
-        const auto bytes_read = ::recv(fd, buffer, sizeof(buffer), 0);
+        const auto expected = expected_response_size(buffer);
+        if (expected > 0 && buffer.size() >= expected) {
+            buffer.erase(0, expected);
+            return;
+        }
+
+        const auto bytes_read = ::recv(fd, chunk, sizeof(chunk), 0);
         if (bytes_read <= 0) {
             throw std::runtime_error(std::string("recv failed: ") + std::strerror(errno));
         }
 
-        response.append(buffer, static_cast<std::size_t>(bytes_read));
-        if (response.find("\r\n") != std::string::npos) {
-            return response;
-        }
+        buffer.append(chunk, static_cast<std::size_t>(bytes_read));
     }
 }
 
@@ -158,11 +191,12 @@ int main(int argc, char** argv) {
     try {
         const auto options = parse_options(argc, argv);
         auto fd = connect_to_server(options);
+        std::string response_buffer;
 
         const auto started = std::chrono::steady_clock::now();
         for (std::size_t i = 0; i < options.requests; ++i) {
             send_all(fd.get(), request_for(options.command, i));
-            (void)read_response(fd.get());
+            read_response(fd.get(), response_buffer);
         }
         const auto finished = std::chrono::steady_clock::now();
 

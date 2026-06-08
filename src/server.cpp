@@ -92,7 +92,14 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
     }
 
     const auto name = command_name(command);
-    return name == "SET" || name == "DEL" || name == "EXPIRE";
+    if (name == "SET") {
+        return response == resp::simple_string("OK");
+    }
+    if (name == "DEL" || name == "EXPIRE") {
+        return response == resp::integer(1);
+    }
+
+    return false;
 }
 
 void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof) {
@@ -112,30 +119,33 @@ void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof)
         }
 
         buffer.append(chunk.data(), static_cast<std::size_t>(bytes_read));
-        const auto command = resp::parse_array(buffer);
-        if (!command.has_value()) {
-            if (buffer.size() > 1024 * 1024) {
-                send_all(client_fd, resp::error("ERR invalid RESP request"));
+
+        while (!buffer.empty()) {
+            const auto command = resp::parse_array_prefix(buffer);
+            if (!command.has_value()) {
+                if (buffer.size() > 1024 * 1024) {
+                    send_all(client_fd, resp::error("ERR invalid RESP request"));
+                    return;
+                }
+                break;
+            }
+
+            const auto response = dispatcher.execute(command->values);
+            if (should_append_to_aof(command->values, response)) {
+                try {
+                    aof.append(resp::array(command->values));
+                } catch (const std::exception& error) {
+                    send_all(client_fd, resp::error(error.what()));
+                    return;
+                }
+            }
+
+            if (!send_all(client_fd, response)) {
                 return;
             }
-            continue;
-        }
 
-        const auto response = dispatcher.execute(*command);
-        if (should_append_to_aof(*command, response)) {
-            try {
-                aof.append(resp::array(*command));
-            } catch (const std::exception& error) {
-                send_all(client_fd, resp::error(error.what()));
-                return;
-            }
+            buffer.erase(0, command->bytes_consumed);
         }
-
-        if (!send_all(client_fd, response)) {
-            return;
-        }
-
-        buffer.clear();
     }
 }
 
