@@ -16,11 +16,14 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -76,16 +79,17 @@ bool send_all(int fd, const std::string& response) {
     return true;
 }
 
-std::string command_name(const std::vector<std::string>& command) {
-    if (command.empty()) {
-        return {};
+bool equals_ci(std::string_view value, std::string_view expected) {
+    if (value.size() != expected.size()) {
+        return false;
     }
 
-    auto name = command.front();
-    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
-        return static_cast<char>(std::toupper(c));
-    });
-    return name;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (static_cast<char>(std::toupper(static_cast<unsigned char>(value[i]))) != expected[i]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool should_append_to_aof(const std::vector<std::string>& command, const std::string& response) {
@@ -93,22 +97,30 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
         return false;
     }
 
-    const auto name = command_name(command);
-    if (name == "SET") {
+    const auto name = std::string_view(command.front());
+    if (equals_ci(name, "SET")) {
         return response == resp::simple_string("OK");
     }
-    if (name == "INCR" || name == "DECR") {
+    if (equals_ci(name, "INCR") || equals_ci(name, "DECR")) {
         return response.front() == ':';
     }
-    if (name == "DEL" || name == "EXPIRE") {
+    if (equals_ci(name, "DEL") || equals_ci(name, "EXPIRE")) {
         return response == resp::integer(1);
     }
 
     return false;
 }
 
-void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const Aof& aof) {
+void configure_client_socket(int fd) {
+    int nodelay = 1;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+}
+
+void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const Aof* aof) {
     std::string buffer;
+    buffer.reserve(8192);
+    std::string output;
+    output.reserve(8192);
     std::array<char, 4096> chunk{};
 
     while (true) {
@@ -124,9 +136,11 @@ void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const 
         }
 
         buffer.append(chunk.data(), static_cast<std::size_t>(bytes_read));
+        std::size_t consumed = 0;
+        output.clear();
 
-        while (!buffer.empty()) {
-            const auto command = resp::parse_array_prefix(buffer);
+        while (consumed < buffer.size()) {
+            const auto command = resp::parse_array_prefix(std::string_view(buffer).substr(consumed));
             if (!command.has_value()) {
                 if (buffer.size() > 1024 * 1024) {
                     send_all(client_fd.get(), resp::error("ERR invalid RESP request"));
@@ -136,20 +150,24 @@ void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const 
             }
 
             const auto response = dispatcher.execute(command->values);
-            if (should_append_to_aof(command->values, response)) {
+            if (aof != nullptr && should_append_to_aof(command->values, response)) {
                 try {
-                    aof.append(resp::array(command->values));
+                    aof->append(resp::array(command->values));
                 } catch (const std::exception& error) {
                     send_all(client_fd.get(), resp::error(error.what()));
                     return;
                 }
             }
 
-            if (!send_all(client_fd.get(), response)) {
-                return;
-            }
+            output.append(response);
+            consumed += command->bytes_consumed;
+        }
 
-            buffer.erase(0, command->bytes_consumed);
+        if (!output.empty() && !send_all(client_fd.get(), output)) {
+            return;
+        }
+        if (consumed > 0) {
+            buffer.erase(0, consumed);
         }
     }
 }
@@ -190,18 +208,23 @@ int Server::run() {
 
     Store store;
     CommandDispatcher dispatcher(store);
-    Aof aof(config_.aof_path, config_.appendfsync);
+    std::unique_ptr<Aof> aof;
+    if (config_.aof_path.has_value()) {
+        aof = std::make_unique<Aof>(*config_.aof_path, config_.appendfsync);
+    }
     TtlCleaner ttl_cleaner(store);
     ThreadPool workers(config_.workers);
 
-    try {
-        const auto replayed = aof.replay(dispatcher);
-        if (replayed > 0) {
-            std::cout << "Replayed " << replayed << " AOF command(s)\n";
+    if (aof) {
+        try {
+            const auto replayed = aof->replay(dispatcher);
+            if (replayed > 0) {
+                std::cout << "Replayed " << replayed << " AOF command(s)\n";
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "AOF replay failed: " << error.what() << "\n";
+            return 1;
         }
-    } catch (const std::exception& error) {
-        std::cerr << "AOF replay failed: " << error.what() << "\n";
-        return 1;
     }
 
     ttl_cleaner.start();
@@ -223,11 +246,13 @@ int Server::run() {
             std::cerr << "accept failed: " << std::strerror(errno) << "\n";
             continue;
         }
+        configure_client_socket(client_fd.get());
 
         auto client = std::make_shared<SocketHandle>(std::move(client_fd));
+        Aof* aof_ptr = aof.get();
         try {
-            workers.enqueue([client, &dispatcher, &aof]() mutable {
-                handle_client(std::move(*client), dispatcher, aof);
+            workers.enqueue([client, &dispatcher, aof_ptr]() mutable {
+                handle_client(std::move(*client), dispatcher, aof_ptr);
             });
         } catch (const std::exception& error) {
             std::cerr << "enqueue failed: " << error.what() << "\n";

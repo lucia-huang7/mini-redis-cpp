@@ -34,7 +34,13 @@ Run the server:
   --port 6380 \
   --workers 4 \
   --aof data/appendonly.aof \
-  --appendfsync everysec
+--appendfsync everysec
+```
+
+For pure in-memory benchmark runs, disable AOF explicitly:
+
+```bash
+./build/miniredis_server --port 6380 --workers 4 --aof ""
 ```
 
 Try it with `redis-cli`:

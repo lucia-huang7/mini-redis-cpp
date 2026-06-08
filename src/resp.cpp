@@ -47,7 +47,7 @@ std::optional<long long> parse_number(std::string_view line) {
 }  // namespace
 
 std::optional<std::vector<std::string>> parse_array(const std::string& input) {
-    const auto result = parse_array_prefix(input);
+    const auto result = parse_array_prefix(std::string_view(input));
     if (!result.has_value() || result->bytes_consumed != input.size()) {
         return std::nullopt;
     }
@@ -55,6 +55,10 @@ std::optional<std::vector<std::string>> parse_array(const std::string& input) {
 }
 
 std::optional<ParseResult> parse_array_prefix(const std::string& input) {
+    return parse_array_prefix(std::string_view(input));
+}
+
+std::optional<ParseResult> parse_array_prefix(std::string_view input) {
     std::string_view view(input);
     std::size_t pos = 0;
 

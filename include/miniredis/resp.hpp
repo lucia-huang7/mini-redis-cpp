@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace miniredis::resp {
@@ -14,6 +15,7 @@ struct ParseResult {
 
 std::optional<std::vector<std::string>> parse_array(const std::string& input);
 std::optional<ParseResult> parse_array_prefix(const std::string& input);
+std::optional<ParseResult> parse_array_prefix(std::string_view input);
 
 std::string array(const std::vector<std::string>& values);
 std::string bulk_array(const std::vector<std::optional<std::string>>& values);
