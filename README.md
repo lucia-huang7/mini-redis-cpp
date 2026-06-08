@@ -2,8 +2,22 @@
 
 A small Redis server implementation in C++.
 
-The codebase is organized around the main Redis components: protocol parsing,
-command execution, in-memory storage, expiration, persistence, and benchmarks.
+The project implements the core Redis path: RESP parsing, TCP request handling,
+command dispatch, in-memory storage, key expiration, append-only persistence,
+and local benchmarking.
+
+## Features
+
+- RESP parser and encoder
+- `redis-cli` compatible TCP server
+- Commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `EXPIRE`, `TTL`
+- Thread-safe in-memory store
+- Fixed worker pool for concurrent clients
+- Lazy expiration plus background TTL cleanup
+- AOF persistence with configurable `fsync` policy
+- AOF replay with corrupt-tail truncation
+- Unit tests and integration tests that start a real server process
+- Benchmark client with multi-client mode and latency percentiles
 
 ## Build
 
@@ -15,7 +29,19 @@ cmake --build build
 Run the server:
 
 ```bash
-./build/miniredis_server --port 6379
+./build/miniredis_server \
+  --port 6380 \
+  --workers 4 \
+  --aof data/appendonly.aof \
+  --appendfsync everysec
+```
+
+Try it with `redis-cli`:
+
+```bash
+redis-cli -p 6380 PING
+redis-cli -p 6380 SET name alice
+redis-cli -p 6380 GET name
 ```
 
 Run tests:
@@ -24,6 +50,54 @@ Run tests:
 ctest --test-dir build --output-on-failure
 ```
 
+The CTest suite includes both unit tests and integration tests. The integration
+tests start `miniredis_server` as a child process and exercise real TCP sockets,
+including pipelined RESP, split packets, concurrent clients, TTL expiry, errors,
+and AOF replay.
+
+## Benchmark
+
+```bash
+./build/miniredis_benchmark \
+  --host 127.0.0.1 \
+  --port 6380 \
+  --requests 4000 \
+  --clients 4 \
+  --command SETGET
+```
+
+The benchmark reports throughput, average latency, and p50/p95/p99 latency.
+See [docs/benchmark.md](docs/benchmark.md) for sample local baseline numbers.
+
+## Durability
+
+AOF sync policy is explicit:
+
+```bash
+--appendfsync always
+--appendfsync everysec
+--appendfsync no
+```
+
+`everysec` is the default. See [docs/persistence.md](docs/persistence.md) for
+the durability tradeoffs, replay behavior, and current TTL persistence semantics.
+
+## Design Notes
+
+The networking model uses blocking sockets with a fixed worker pool. This avoids
+unbounded detached threads while keeping ownership and shutdown behavior easy to
+inspect. Long-lived idle clients still occupy workers; this is an intentional
+tradeoff before moving to a `poll`/`epoll`/`kqueue` event loop.
+
+CI builds Debug, Release, and ASan/UBSan configurations. The repository also
+includes a `.clang-tidy` profile for local static analysis.
+
+More detail:
+
+- [docs/architecture.md](docs/architecture.md)
+- [docs/persistence.md](docs/persistence.md)
+- [docs/engineering.md](docs/engineering.md)
+
 ## Layout
 
 ```text
@@ -31,7 +105,7 @@ include/miniredis/    Public headers
 src/                  Implementation files
 tests/                Tests
 benchmarks/           Benchmark client and scripts
-docs/                 Architecture and protocol notes
+docs/                 Architecture, persistence, and engineering notes
 examples/             redis-cli examples
 data/                 Local append-only files
 ```
