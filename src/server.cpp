@@ -187,7 +187,7 @@ int Server::run() {
 
     Store store;
     CommandDispatcher dispatcher(store);
-    Aof aof(config_.aof_path);
+    Aof aof(config_.aof_path, config_.appendfsync);
     TtlCleaner ttl_cleaner(store);
     ThreadPool workers(config_.workers);
 

@@ -76,7 +76,9 @@ Append-only file persistence records mutating commands:
 - `DEL`
 - `EXPIRE`
 
-On startup, the server replays the AOF file to rebuild the in-memory store.
+On startup, the server replays the AOF file to rebuild the in-memory store. The AOF file remains open during runtime, supports configurable `fsync` policy, and truncates incomplete/corrupt tails during replay.
+
+See `docs/persistence.md` for durability policy and TTL persistence tradeoffs.
 
 ## Current Capabilities
 
