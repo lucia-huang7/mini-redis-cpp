@@ -14,6 +14,8 @@ namespace miniredis {
 Aof::Aof(std::filesystem::path path) : path_(std::move(path)) {}
 
 void Aof::append(const std::string& encoded_command) const {
+    std::lock_guard lock(mutex_);
+
     if (path_.has_parent_path()) {
         std::filesystem::create_directories(path_.parent_path());
     }

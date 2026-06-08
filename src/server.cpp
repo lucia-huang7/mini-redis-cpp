@@ -15,6 +15,7 @@
 #include <exception>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <arpa/inet.h>
@@ -102,12 +103,12 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
     return false;
 }
 
-void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof) {
+void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const Aof& aof) {
     std::string buffer;
     std::array<char, 4096> chunk{};
 
     while (true) {
-        const auto bytes_read = ::recv(client_fd, chunk.data(), chunk.size(), 0);
+        const auto bytes_read = ::recv(client_fd.get(), chunk.data(), chunk.size(), 0);
         if (bytes_read == 0) {
             return;
         }
@@ -124,7 +125,7 @@ void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof)
             const auto command = resp::parse_array_prefix(buffer);
             if (!command.has_value()) {
                 if (buffer.size() > 1024 * 1024) {
-                    send_all(client_fd, resp::error("ERR invalid RESP request"));
+                    send_all(client_fd.get(), resp::error("ERR invalid RESP request"));
                     return;
                 }
                 break;
@@ -135,12 +136,12 @@ void handle_client(int client_fd, CommandDispatcher& dispatcher, const Aof& aof)
                 try {
                     aof.append(resp::array(command->values));
                 } catch (const std::exception& error) {
-                    send_all(client_fd, resp::error(error.what()));
+                    send_all(client_fd.get(), resp::error(error.what()));
                     return;
                 }
             }
 
-            if (!send_all(client_fd, response)) {
+            if (!send_all(client_fd.get(), response)) {
                 return;
             }
 
@@ -217,7 +218,12 @@ int Server::run() {
             continue;
         }
 
-        handle_client(client_fd.get(), dispatcher, aof);
+        std::thread(
+            handle_client,
+            std::move(client_fd),
+            std::ref(dispatcher),
+            std::cref(aof))
+            .detach();
     }
 }
 
