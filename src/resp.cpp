@@ -47,7 +47,7 @@ std::optional<long long> parse_number(std::string_view line) {
 }  // namespace
 
 std::optional<std::vector<std::string>> parse_array(const std::string& input) {
-    const auto result = parse_array_prefix(std::string_view(input));
+    const auto result = parse_array_prefix(input);
     if (!result.has_value() || result->bytes_consumed != input.size()) {
         return std::nullopt;
     }
@@ -59,6 +59,20 @@ std::optional<ParseResult> parse_array_prefix(const std::string& input) {
 }
 
 std::optional<ParseResult> parse_array_prefix(std::string_view input) {
+    const auto result = parse_array_prefix_view(input);
+    if (!result.has_value()) {
+        return std::nullopt;
+    }
+
+    std::vector<std::string> values;
+    values.reserve(result->values.size());
+    for (const auto value : result->values) {
+        values.emplace_back(value);
+    }
+    return ParseResult{std::move(values), result->bytes_consumed};
+}
+
+std::optional<ParseViewResult> parse_array_prefix_view(std::string_view input) {
     std::string_view view(input);
     std::size_t pos = 0;
 
@@ -77,7 +91,7 @@ std::optional<ParseResult> parse_array_prefix(std::string_view input) {
         return std::nullopt;
     }
 
-    std::vector<std::string> values;
+    std::vector<std::string_view> values;
     values.reserve(static_cast<std::size_t>(*array_len));
 
     for (long long i = 0; i < *array_len; ++i) {
@@ -110,7 +124,7 @@ std::optional<ParseResult> parse_array_prefix(std::string_view input) {
         pos += 2;
     }
 
-    return ParseResult{std::move(values), pos};
+    return ParseViewResult{std::move(values), pos};
 }
 
 std::string array(const std::vector<std::string>& values) {

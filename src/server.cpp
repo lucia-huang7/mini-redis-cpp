@@ -92,7 +92,7 @@ bool equals_ci(std::string_view value, std::string_view expected) {
     return true;
 }
 
-bool should_append_to_aof(const std::vector<std::string>& command, const std::string& response) {
+bool should_append_to_aof(const std::vector<std::string_view>& command, const std::string& response) {
     if (response.empty() || response.front() == '-') {
         return false;
     }
@@ -109,6 +109,15 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
     }
 
     return false;
+}
+
+std::vector<std::string> copy_command(const std::vector<std::string_view>& command) {
+    std::vector<std::string> copied;
+    copied.reserve(command.size());
+    for (const auto value : command) {
+        copied.emplace_back(value);
+    }
+    return copied;
 }
 
 void configure_client_socket(int fd) {
@@ -140,7 +149,7 @@ void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const 
         output.clear();
 
         while (consumed < buffer.size()) {
-            const auto command = resp::parse_array_prefix(std::string_view(buffer).substr(consumed));
+            const auto command = resp::parse_array_prefix_view(std::string_view(buffer).substr(consumed));
             if (!command.has_value()) {
                 if (buffer.size() > 1024 * 1024) {
                     send_all(client_fd.get(), resp::error("ERR invalid RESP request"));
@@ -152,7 +161,7 @@ void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const 
             const auto response = dispatcher.execute(command->values);
             if (aof != nullptr && should_append_to_aof(command->values, response)) {
                 try {
-                    aof->append(resp::array(command->values));
+                    aof->append(resp::array(copy_command(command->values)));
                 } catch (const std::exception& error) {
                     send_all(client_fd.get(), resp::error(error.what()));
                     return;
