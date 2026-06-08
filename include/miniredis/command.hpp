@@ -13,7 +13,7 @@ public:
     explicit CommandDispatcher(Store& store);
 
     std::string execute(const std::vector<std::string>& command);
-    std::string execute(const std::vector<std::string_view>& command);
+    std::string execute_view(const std::vector<std::string_view>& command);
 
 private:
     Store& store_;

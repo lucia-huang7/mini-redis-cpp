@@ -158,7 +158,7 @@ void handle_client(SocketHandle client_fd, CommandDispatcher& dispatcher, const 
                 break;
             }
 
-            const auto response = dispatcher.execute(command->values);
+            const auto response = dispatcher.execute_view(command->values);
             if (aof != nullptr && should_append_to_aof(command->values, response)) {
                 try {
                     aof->append(resp::array(copy_command(command->values)));

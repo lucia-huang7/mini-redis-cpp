@@ -95,10 +95,10 @@ std::string CommandDispatcher::execute(const std::vector<std::string>& command) 
     for (const auto& value : command) {
         view_command.emplace_back(value);
     }
-    return execute(view_command);
+    return execute_view(view_command);
 }
 
-std::string CommandDispatcher::execute(const std::vector<std::string_view>& command) {
+std::string CommandDispatcher::execute_view(const std::vector<std::string_view>& command) {
     if (command.empty()) {
         return resp::error("ERR empty command");
     }
