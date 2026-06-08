@@ -24,14 +24,22 @@ $-1\r\n
 -ERR wrong number of arguments\r\n
 ```
 
-## Initial Command Set
+## Command Set
 
 ```text
-PING
+PING [message]
 ECHO value
-SET key value
+SET key value [EX seconds | PX milliseconds] [NX | XX]
 GET key
+MGET key [key ...]
+EXISTS key [key ...]
 DEL key
 EXPIRE key seconds
 TTL key
+INCR key
+DECR key
 ```
+
+`MGET` returns an array of bulk strings and null bulk strings. `SET NX` and
+`SET XX` return `+OK` when a write is applied and `$-1` when the condition is
+not met.

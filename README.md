@@ -10,8 +10,9 @@ and local benchmarking.
 
 - RESP parser and encoder
 - `redis-cli` compatible TCP server
-- Commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `EXPIRE`, `TTL`
-- Thread-safe in-memory store
+- Commands: `PING`, `ECHO`, `SET`, `GET`, `MGET`, `EXISTS`, `DEL`, `EXPIRE`, `TTL`, `INCR`, `DECR`
+- `SET` options: `EX`, `PX`, `NX`, `XX`
+- Thread-safe in-memory store with shared locks for read-heavy paths
 - Fixed worker pool for concurrent clients
 - Lazy expiration plus background TTL cleanup
 - AOF persistence with configurable `fsync` policy
@@ -42,6 +43,8 @@ Try it with `redis-cli`:
 redis-cli -p 6380 PING
 redis-cli -p 6380 SET name alice
 redis-cli -p 6380 GET name
+redis-cli -p 6380 SET lock token NX EX 10
+redis-cli -p 6380 INCR visits
 ```
 
 Run tests:
@@ -88,6 +91,11 @@ The networking model uses blocking sockets with a fixed worker pool. This avoids
 unbounded detached threads while keeping ownership and shutdown behavior easy to
 inspect. Long-lived idle clients still occupy workers; this is an intentional
 tradeoff before moving to a `poll`/`epoll`/`kqueue` event loop.
+
+The store uses `std::shared_mutex`: read paths such as `GET` and `TTL` take
+shared locks, while mutation, expiry cleanup, and integer updates take exclusive
+locks. `INCR` and `DECR` are atomic at the store layer and preserve an existing
+TTL.
 
 CI builds Debug, Release, and ASan/UBSan configurations. The repository also
 includes a `.clang-tidy` profile for local static analysis.

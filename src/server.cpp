@@ -97,6 +97,9 @@ bool should_append_to_aof(const std::vector<std::string>& command, const std::st
     if (name == "SET") {
         return response == resp::simple_string("OK");
     }
+    if (name == "INCR" || name == "DECR") {
+        return response.front() == ':';
+    }
     if (name == "DEL" || name == "EXPIRE") {
         return response == resp::integer(1);
     }

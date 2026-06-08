@@ -16,6 +16,7 @@ std::optional<std::vector<std::string>> parse_array(const std::string& input);
 std::optional<ParseResult> parse_array_prefix(const std::string& input);
 
 std::string array(const std::vector<std::string>& values);
+std::string bulk_array(const std::vector<std::optional<std::string>>& values);
 std::string simple_string(const std::string& value);
 std::string error(const std::string& message);
 std::string integer(long long value);
