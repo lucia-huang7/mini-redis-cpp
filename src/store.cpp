@@ -1,5 +1,6 @@
 #include "miniredis/store.hpp"
 
+#include <functional>
 #include <limits>
 #include <mutex>
 #include <shared_mutex>
@@ -13,13 +14,14 @@ bool Store::set(std::string key, std::string value) {
 }
 
 bool Store::set(std::string key, std::string value, SetOptions options) {
-    std::unique_lock lock(mutex_);
-    auto it = values_.find(key);
-    if (it != values_.end() && is_expired(it->second)) {
-        it = values_.erase(it);
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    auto it = shard.values.find(key);
+    if (it != shard.values.end() && is_expired(it->second)) {
+        it = shard.values.erase(it);
     }
 
-    const bool exists = it != values_.end();
+    const bool exists = it != shard.values.end();
     if (options.condition == SetCondition::IfExists && !exists) {
         return false;
     }
@@ -32,15 +34,16 @@ bool Store::set(std::string key, std::string value, SetOptions options) {
         expires_at = std::chrono::steady_clock::now() + *options.ttl;
     }
 
-    values_[std::move(key)] = Value{std::move(value), expires_at};
+    shard.values[std::move(key)] = Value{std::move(value), expires_at};
     return true;
 }
 
 std::optional<std::string> Store::get(const std::string& key) {
     {
-        std::shared_lock lock(mutex_);
-        auto it = values_.find(key);
-        if (it == values_.end()) {
+        const auto& shard = shard_for(key);
+        std::shared_lock lock(shard.mutex);
+        auto it = shard.values.find(key);
+        if (it == shard.values.end()) {
             return std::nullopt;
         }
 
@@ -74,16 +77,18 @@ std::size_t Store::exists(const std::vector<std::string>& keys) {
 }
 
 bool Store::del(const std::string& key) {
-    std::unique_lock lock(mutex_);
-    return values_.erase(key) > 0;
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    return shard.values.erase(key) > 0;
 }
 
 bool Store::expire(const std::string& key, std::chrono::seconds ttl) {
-    std::unique_lock lock(mutex_);
-    auto it = values_.find(key);
-    if (it == values_.end() || is_expired(it->second)) {
-        if (it != values_.end()) {
-            values_.erase(it);
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    auto it = shard.values.find(key);
+    if (it == shard.values.end() || is_expired(it->second)) {
+        if (it != shard.values.end()) {
+            shard.values.erase(it);
         }
         return false;
     }
@@ -94,9 +99,10 @@ bool Store::expire(const std::string& key, std::chrono::seconds ttl) {
 
 std::optional<long long> Store::ttl(const std::string& key) {
     {
-        std::shared_lock lock(mutex_);
-        auto it = values_.find(key);
-        if (it == values_.end()) {
+        const auto& shard = shard_for(key);
+        std::shared_lock lock(shard.mutex);
+        auto it = shard.values.find(key);
+        if (it == shard.values.end()) {
             return std::nullopt;
         }
 
@@ -116,14 +122,15 @@ std::optional<long long> Store::ttl(const std::string& key) {
 }
 
 long long Store::increment(const std::string& key, long long delta) {
-    std::unique_lock lock(mutex_);
-    auto it = values_.find(key);
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    auto it = shard.values.find(key);
     std::optional<std::chrono::steady_clock::time_point> expires_at;
 
     long long current = 0;
-    if (it != values_.end()) {
+    if (it != shard.values.end()) {
         if (is_expired(it->second)) {
-            values_.erase(it);
+            shard.values.erase(it);
         } else {
             expires_at = it->second.expires_at;
             try {
@@ -144,20 +151,22 @@ long long Store::increment(const std::string& key, long long delta) {
     }
 
     const auto updated = current + delta;
-    values_[key] = Value{std::to_string(updated), expires_at};
+    shard.values[key] = Value{std::to_string(updated), expires_at};
     return updated;
 }
 
 std::size_t Store::remove_expired() {
-    std::unique_lock lock(mutex_);
     std::size_t removed = 0;
 
-    for (auto it = values_.begin(); it != values_.end();) {
-        if (is_expired(it->second)) {
-            it = values_.erase(it);
-            ++removed;
-        } else {
-            ++it;
+    for (auto& shard : shards_) {
+        std::unique_lock lock(shard.mutex);
+        for (auto it = shard.values.begin(); it != shard.values.end();) {
+            if (is_expired(it->second)) {
+                it = shard.values.erase(it);
+                ++removed;
+            } else {
+                ++it;
+            }
         }
     }
 
@@ -169,11 +178,20 @@ bool Store::is_expired(const Value& value) const {
 }
 
 void Store::erase_if_expired(const std::string& key) {
-    std::unique_lock lock(mutex_);
-    auto it = values_.find(key);
-    if (it != values_.end() && is_expired(it->second)) {
-        values_.erase(it);
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    auto it = shard.values.find(key);
+    if (it != shard.values.end() && is_expired(it->second)) {
+        shard.values.erase(it);
     }
+}
+
+Store::Shard& Store::shard_for(const std::string& key) {
+    return shards_[std::hash<std::string>{}(key) % kShardCount];
+}
+
+const Store::Shard& Store::shard_for(const std::string& key) const {
+    return shards_[std::hash<std::string>{}(key) % kShardCount];
 }
 
 }  // namespace miniredis

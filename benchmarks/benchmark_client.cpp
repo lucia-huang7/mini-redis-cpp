@@ -26,6 +26,7 @@ struct Options {
     std::size_t requests = 10000;
     std::size_t clients = 1;
     std::size_t pipeline = 1;
+    std::size_t keyspace = 1;
     std::string command = "PING";
 };
 
@@ -87,6 +88,8 @@ Options parse_options(int argc, char** argv) {
             options.clients = static_cast<std::size_t>(std::stoull(argv[++i]));
         } else if (arg == "--pipeline" && i + 1 < argc) {
             options.pipeline = static_cast<std::size_t>(std::stoull(argv[++i]));
+        } else if (arg == "--keyspace" && i + 1 < argc) {
+            options.keyspace = static_cast<std::size_t>(std::stoull(argv[++i]));
         } else if (arg == "--command" && i + 1 < argc) {
             options.command = argv[++i];
         } else {
@@ -102,6 +105,9 @@ Options parse_options(int argc, char** argv) {
     }
     if (options.pipeline == 0) {
         throw std::runtime_error("pipeline must be greater than zero");
+    }
+    if (options.keyspace == 0) {
+        throw std::runtime_error("keyspace must be greater than zero");
     }
 
     return options;
@@ -194,28 +200,31 @@ void read_response(int fd, std::string& buffer, std::size_t& consumed) {
     }
 }
 
-std::string request_for(const std::string& command, std::size_t index) {
+std::string request_for(const Options& options, std::size_t index) {
+    const auto& command = options.command;
     if (command == "PING") {
         return miniredis::resp::array({"PING"});
     }
 
     if (command == "SETGET") {
+        const auto key = "bench:" + std::to_string(index % options.keyspace);
         if (index % 2 == 0) {
-            return miniredis::resp::array({"SET", "bench:key", std::to_string(index)});
+            return miniredis::resp::array({"SET", key, std::to_string(index)});
         }
-        return miniredis::resp::array({"GET", "bench:key"});
+        return miniredis::resp::array({"GET", key});
     }
 
     throw std::runtime_error("unsupported command; use PING or SETGET");
 }
 
-void append_request_for(std::string& output, const std::string& command, std::size_t index) {
+void append_request_for(std::string& output, const Options& options, std::size_t index) {
+    const auto& command = options.command;
     if (command == "PING") {
         output.append("*1\r\n$4\r\nPING\r\n");
         return;
     }
 
-    output.append(request_for(command, index));
+    output.append(request_for(options, index));
 }
 
 WorkerResult run_worker(const Options& options, std::size_t client_index, std::size_t requests) {
@@ -233,7 +242,7 @@ WorkerResult run_worker(const Options& options, std::size_t client_index, std::s
         const auto batch_size = std::min(options.pipeline, requests - i);
         request_buffer.clear();
         for (std::size_t j = 0; j < batch_size; ++j) {
-            append_request_for(request_buffer, options.command, client_index * requests + i + j);
+            append_request_for(request_buffer, options, client_index * requests + i + j);
         }
 
         const auto request_started = std::chrono::steady_clock::now();
@@ -271,7 +280,8 @@ double percentile(const std::vector<double>& values, double percentile) {
 void print_usage() {
     std::cerr
         << "Usage: miniredis_benchmark [--host 127.0.0.1] [--port 6379] "
-        << "[--requests 10000] [--clients 1] [--pipeline 1] [--command PING|SETGET]\n";
+        << "[--requests 10000] [--clients 1] [--pipeline 1] [--keyspace 1] "
+        << "[--command PING|SETGET]\n";
 }
 
 }  // namespace
@@ -332,6 +342,7 @@ int main(int argc, char** argv) {
         std::cout << "Requests: " << options.requests << "\n";
         std::cout << "Clients: " << options.clients << "\n";
         std::cout << "Pipeline: " << options.pipeline << "\n";
+        std::cout << "Keyspace: " << options.keyspace << "\n";
         std::cout << "Total time: " << elapsed << " sec\n";
         std::cout << "Throughput: " << throughput << " req/sec\n";
         std::cout << "Average latency: " << avg_latency_ms << " ms\n";
