@@ -1,0 +1,15 @@
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  modernize-*
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*include/miniredis/.*|.*src/.*|.*tests/.*|.*benchmarks/.*'
+FormatStyle: none
+CheckOptions:
+  - key: readability-identifier-length.IgnoredVariableNames
+    value: 'i|j|fd|it'
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '40'
