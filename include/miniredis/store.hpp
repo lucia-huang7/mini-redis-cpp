@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -15,6 +16,7 @@ public:
     bool del(const std::string& key);
     bool expire(const std::string& key, std::chrono::seconds ttl);
     std::optional<long long> ttl(const std::string& key);
+    std::size_t remove_expired();
 
 private:
     struct Value {

@@ -4,6 +4,7 @@
 #include "miniredis/command.hpp"
 #include "miniredis/resp.hpp"
 #include "miniredis/store.hpp"
+#include "miniredis/ttl.hpp"
 
 #include <array>
 #include <algorithm>
@@ -175,6 +176,7 @@ int Server::run() {
     Store store;
     CommandDispatcher dispatcher(store);
     Aof aof(config_.aof_path);
+    TtlCleaner ttl_cleaner(store);
 
     try {
         const auto replayed = aof.replay(dispatcher);
@@ -186,6 +188,7 @@ int Server::run() {
         return 1;
     }
 
+    ttl_cleaner.start();
     std::cout << "Mini Redis listening on 0.0.0.0:" << config_.port << "\n";
 
     while (true) {

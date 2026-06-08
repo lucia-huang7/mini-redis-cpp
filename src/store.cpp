@@ -65,6 +65,22 @@ std::optional<long long> Store::ttl(const std::string& key) {
     return remaining.count();
 }
 
+std::size_t Store::remove_expired() {
+    std::unique_lock lock(mutex_);
+    std::size_t removed = 0;
+
+    for (auto it = values_.begin(); it != values_.end();) {
+        if (is_expired(it->second)) {
+            it = values_.erase(it);
+            ++removed;
+        } else {
+            ++it;
+        }
+    }
+
+    return removed;
+}
+
 bool Store::is_expired(const Value& value) const {
     return value.expires_at.has_value() && std::chrono::steady_clock::now() >= *value.expires_at;
 }
