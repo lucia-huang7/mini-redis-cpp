@@ -18,7 +18,9 @@ Client
 
 Owns the listening socket, accepts client connections, reads requests, and writes RESP responses.
 
-The current implementation uses a thread-per-connection model: the main thread accepts connections and each client connection is handled by a detached worker thread.
+The current implementation uses a fixed worker pool. The main thread accepts connections and enqueues each accepted client socket as a connection task. Worker threads then run the blocking connection loop for assigned clients.
+
+This model is intentionally simpler than an event loop based on `poll`, `epoll`, or `kqueue`, but it avoids unbounded thread creation and makes concurrency behavior explicit. It is a reasonable intermediate design for this project because the command path, store locking, AOF writes, and benchmark tooling are still easy to inspect.
 
 ### RESP Parser
 
@@ -84,5 +86,5 @@ On startup, the server replays the AOF file to rebuild the in-memory store.
 - Thread-safe in-memory store
 - Lazy expiration and background TTL cleanup
 - AOF append and startup replay
-- Thread-per-connection client handling
+- Fixed worker pool for client handling
 - Single-process benchmark client with multi-client mode
