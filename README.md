@@ -1,6 +1,6 @@
 # Mini Redis C++
 
-A small Redis server implementation in C++.
+A from-scratch Redis server in C++ with RESP protocol parsing, thread-pool concurrency, shared-mutex read paths, AOF persistence, and multi-client benchmarking with latency percentiles.
 
 The project implements the core Redis path: RESP parsing, TCP request handling,
 command dispatch, in-memory storage, key expiration, append-only persistence,
