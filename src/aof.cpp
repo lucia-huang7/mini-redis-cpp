@@ -17,15 +17,20 @@ namespace miniredis {
 
 namespace {
 
-void write_all(int fd, const std::string& content) {
+void write_all(int fd, const std::string& content, const AofIoHooks& hooks) {
     std::size_t written = 0;
     while (written < content.size()) {
-        const auto result = ::write(fd, content.data() + written, content.size() - written);
+        const auto result = hooks.write
+            ? hooks.write(fd, content.data() + written, content.size() - written)
+            : ::write(fd, content.data() + written, content.size() - written);
         if (result < 0) {
             if (errno == EINTR) {
                 continue;
             }
             throw std::runtime_error(std::string("failed to write AOF file: ") + std::strerror(errno));
+        }
+        if (result == 0) {
+            throw std::runtime_error("failed to write AOF file: zero-length write");
         }
         written += static_cast<std::size_t>(result);
     }
@@ -33,10 +38,11 @@ void write_all(int fd, const std::string& content) {
 
 }  // namespace
 
-Aof::Aof(std::filesystem::path path, AofSyncPolicy sync_policy)
+Aof::Aof(std::filesystem::path path, AofSyncPolicy sync_policy, AofIoHooks io_hooks)
     : path_(std::move(path)),
       sync_policy_(sync_policy),
-      last_sync_(std::chrono::steady_clock::now()) {
+      last_sync_(std::chrono::steady_clock::now()),
+      io_hooks_(std::move(io_hooks)) {
     if (path_.has_parent_path()) {
         std::filesystem::create_directories(path_.parent_path());
     }
@@ -55,7 +61,7 @@ Aof::~Aof() {
 
 void Aof::append(const std::string& encoded_command) const {
     std::lock_guard lock(mutex_);
-    write_all(fd_, encoded_command);
+    write_all(fd_, encoded_command, io_hooks_);
     sync_if_needed();
 }
 
@@ -112,7 +118,8 @@ void Aof::sync_if_needed() const {
         return;
     }
 
-    if (::fsync(fd_) < 0) {
+    const auto result = io_hooks_.fsync ? io_hooks_.fsync(fd_) : ::fsync(fd_);
+    if (result < 0) {
         throw std::runtime_error(std::string("failed to fsync AOF file: ") + std::strerror(errno));
     }
     last_sync_ = now;

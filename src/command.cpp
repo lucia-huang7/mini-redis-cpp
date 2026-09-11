@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cctype>
 #include <chrono>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -42,6 +43,14 @@ std::optional<long long> parse_integer(std::string_view value) {
     return result;
 }
 
+std::optional<long long> seconds_to_milliseconds(long long seconds) {
+    if (seconds > std::numeric_limits<long long>::max() / 1000 ||
+        seconds < std::numeric_limits<long long>::min() / 1000) {
+        return std::nullopt;
+    }
+    return seconds * 1000;
+}
+
 std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string_view>& command) {
     Store::SetOptions options;
 
@@ -61,8 +70,10 @@ std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string
             options.condition = Store::SetCondition::IfExists;
             continue;
         }
-        if (equals_ci(option, "EX") || equals_ci(option, "PX")) {
-            if (options.ttl.has_value() || i + 1 >= command.size()) {
+        if (equals_ci(option, "EX") || equals_ci(option, "PX") ||
+            equals_ci(option, "EXAT") || equals_ci(option, "PXAT")) {
+            if (options.ttl.has_value() || options.expires_at_unix_ms.has_value() ||
+                i + 1 >= command.size()) {
                 return std::nullopt;
             }
 
@@ -73,8 +84,16 @@ std::optional<Store::SetOptions> parse_set_options(const std::vector<std::string
 
             if (equals_ci(option, "EX")) {
                 options.ttl = std::chrono::seconds(*ttl);
-            } else {
+            } else if (equals_ci(option, "PX")) {
                 options.ttl = std::chrono::milliseconds(*ttl);
+            } else if (equals_ci(option, "EXAT")) {
+                const auto milliseconds = seconds_to_milliseconds(*ttl);
+                if (!milliseconds.has_value()) {
+                    return std::nullopt;
+                }
+                options.expires_at_unix_ms = *milliseconds;
+            } else {
+                options.expires_at_unix_ms = *ttl;
             }
             continue;
         }
@@ -183,6 +202,26 @@ std::string CommandDispatcher::execute_view(const std::vector<std::string_view>&
         }
 
         const auto updated = store_.expire(std::string(command[1]), std::chrono::seconds(*seconds));
+        return resp::integer(updated ? 1 : 0);
+    }
+
+    if (equals_ci(name, "EXPIREAT") || equals_ci(name, "PEXPIREAT")) {
+        if (command.size() != 3) {
+            return wrong_arity(equals_ci(name, "EXPIREAT") ? "expireat" : "pexpireat");
+        }
+
+        const auto timestamp = parse_integer(command[2]);
+        if (!timestamp.has_value()) {
+            return resp::error("ERR value is not an integer or out of range");
+        }
+        const auto unix_ms = equals_ci(name, "EXPIREAT")
+            ? seconds_to_milliseconds(*timestamp)
+            : timestamp;
+        if (!unix_ms.has_value()) {
+            return resp::error("ERR value is not an integer or out of range");
+        }
+
+        const auto updated = store_.expire_at(std::string(command[1]), *unix_ms);
         return resp::integer(updated ? 1 : 0);
     }
 

@@ -6,7 +6,9 @@
 #include <csignal>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -180,7 +182,13 @@ private:
 
 class ServerProcess {
 public:
-    ServerProcess(std::string server_path, std::uint16_t port, std::filesystem::path aof_path, std::size_t workers = 4)
+    ServerProcess(
+        std::string server_path,
+        std::uint16_t port,
+        std::filesystem::path aof_path,
+        std::size_t workers = 4,
+        std::size_t idle_timeout_ms = 30000,
+        std::size_t max_queued_clients = 1024)
         : port_(port) {
         pid_ = ::fork();
         if (pid_ < 0) {
@@ -191,6 +199,8 @@ public:
             const auto port_arg = std::to_string(port);
             const auto workers_arg = std::to_string(workers);
             const auto aof_arg = aof_path.string();
+            const auto idle_timeout_arg = std::to_string(idle_timeout_ms);
+            const auto max_queued_clients_arg = std::to_string(max_queued_clients);
             ::execl(
                 server_path.c_str(),
                 server_path.c_str(),
@@ -200,6 +210,10 @@ public:
                 workers_arg.c_str(),
                 "--aof",
                 aof_arg.c_str(),
+                "--idle-timeout-ms",
+                idle_timeout_arg.c_str(),
+                "--max-queued-clients",
+                max_queued_clients_arg.c_str(),
                 static_cast<char*>(nullptr));
             _exit(127);
         }
@@ -274,6 +288,24 @@ void error_input_test(std::uint16_t port) {
     assert(client.command({"UNKNOWN"}) == "-ERR unknown command\r\n");
 }
 
+void hostile_resp_test(std::uint16_t port) {
+    {
+        Client client(port);
+        client.send_raw("*999999999999999999999999\r\n");
+        assert(client.read() == "-ERR invalid RESP request\r\n");
+    }
+    {
+        Client client(port);
+        client.send_raw("*1025\r\n");
+        assert(client.read() == "-ERR request exceeds configured limits\r\n");
+    }
+    {
+        Client client(port);
+        client.send_raw("*1\r\n$524289\r\n");
+        assert(client.read() == "-ERR request exceeds configured limits\r\n");
+    }
+}
+
 void concurrent_clients_test(std::uint16_t port) {
     constexpr std::size_t clients = 8;
     constexpr std::size_t iterations = 50;
@@ -327,6 +359,138 @@ void aof_replay_test(const std::string& server_path) {
     std::filesystem::remove(aof_path);
 }
 
+void aof_ttl_deadline_replay_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("ttl_deadline");
+    std::filesystem::remove(aof_path);
+
+    {
+        ServerProcess server(server_path, port, aof_path);
+        Client client(port);
+        assert(client.command({"SET", "expire-command", "value"}) == "+OK\r\n");
+        assert(client.command({"EXPIRE", "expire-command", "1"}) == ":1\r\n");
+        assert(client.command({"SET", "set-option", "value", "PX", "1000"}) == "+OK\r\n");
+        assert(client.command({"SET", "remaining", "value"}) == "+OK\r\n");
+        assert(client.command({"EXPIRE", "remaining", "10"}) == ":1\r\n");
+        server.stop();
+    }
+
+    {
+        std::ifstream file(aof_path, std::ios::binary);
+        const std::string contents(
+            (std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        assert(contents.find("PEXPIREAT") != std::string::npos);
+        assert(contents.find("PXAT") != std::string::npos);
+        assert(contents.find("$6\r\nEXPIRE\r\n") == std::string::npos);
+        assert(contents.find("$2\r\nPX\r\n") == std::string::npos);
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+
+    {
+        ServerProcess server(server_path, port, aof_path);
+        Client client(port);
+        assert(client.command({"GET", "expire-command"}) == "$-1\r\n");
+        assert(client.command({"GET", "set-option"}) == "$-1\r\n");
+        assert(client.command({"GET", "remaining"}) == "$5\r\nvalue\r\n");
+        const auto remaining = client.command({"TTL", "remaining"});
+        const auto remaining_seconds = std::stoll(remaining.substr(1));
+        assert(remaining_seconds >= 0 && remaining_seconds <= 8);
+        server.stop();
+    }
+
+    std::filesystem::remove(aof_path);
+}
+
+void concurrent_aof_order_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("concurrent_order");
+    std::filesystem::remove(aof_path);
+    std::string expected;
+
+    {
+        ServerProcess server(server_path, port, aof_path, 8);
+        constexpr std::size_t clients = 8;
+        constexpr std::size_t iterations = 100;
+        std::vector<std::thread> threads;
+        for (std::size_t i = 0; i < clients; ++i) {
+            threads.emplace_back([port, i] {
+                Client client(port);
+                for (std::size_t j = 0; j < iterations; ++j) {
+                    const auto value = std::to_string(i) + ":" + std::to_string(j);
+                    assert(client.command({"SET", "shared-key", value}) == "+OK\r\n");
+                }
+            });
+        }
+        for (auto& thread : threads) {
+            thread.join();
+        }
+        Client client(port);
+        expected = client.command({"GET", "shared-key"});
+        assert(expected != "$-1\r\n");
+        server.stop();
+    }
+
+    {
+        ServerProcess server(server_path, port, aof_path, 8);
+        Client client(port);
+        assert(client.command({"GET", "shared-key"}) == expected);
+        server.stop();
+    }
+    std::filesystem::remove(aof_path);
+}
+
+void idle_and_slow_client_timeout_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("idle_timeout");
+    std::filesystem::remove(aof_path);
+    ServerProcess server(server_path, port, aof_path, 1, 150, 4);
+
+    auto idle = connect_to(port);
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    Client after_idle(port);
+    assert(after_idle.command({"PING"}) == "+PONG\r\n");
+
+    auto slow = connect_to(port);
+    send_all(slow.get(), "*2\r\n$4\r\nECHO\r\n$100\r\npartial");
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    Client after_slow(port);
+    assert(after_slow.command({"PING"}) == "+PONG\r\n");
+
+    server.stop();
+    std::filesystem::remove(aof_path);
+}
+
+void connection_queue_exhaustion_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("queue_exhaustion");
+    std::filesystem::remove(aof_path);
+    ServerProcess server(server_path, port, aof_path, 1, 200, 2);
+
+    std::vector<Fd> clients;
+    for (int i = 0; i < 12; ++i) {
+        clients.emplace_back(connect_to(port));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::size_t rejected = 0;
+    char byte = 0;
+    for (auto& client : clients) {
+        const auto result = ::recv(client.get(), &byte, 1, MSG_DONTWAIT);
+        if (result == 0) {
+            ++rejected;
+        }
+    }
+    assert(rejected > 0);
+    clients.clear();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    Client recovered(port);
+    assert(recovered.command({"PING"}) == "+PONG\r\n");
+    server.stop();
+    std::filesystem::remove(aof_path);
+}
+
 void run_server_integration_tests(const std::string& server_path) {
     const auto port = find_free_port();
     const auto aof_path = temp_aof_path("integration");
@@ -336,6 +500,7 @@ void run_server_integration_tests(const std::string& server_path) {
     pipeline_test(port);
     split_resp_test(port);
     error_input_test(port);
+    hostile_resp_test(port);
     concurrent_clients_test(port);
     ttl_boundary_test(port);
     server.stop();
@@ -353,6 +518,10 @@ int main(int argc, char** argv) {
 
     run_server_integration_tests(argv[1]);
     aof_replay_test(argv[1]);
+    aof_ttl_deadline_replay_test(argv[1]);
+    concurrent_aof_order_test(argv[1]);
+    idle_and_slow_client_timeout_test(argv[1]);
+    connection_queue_exhaustion_test(argv[1]);
 
     std::cout << "Integration tests passed\n";
     return 0;

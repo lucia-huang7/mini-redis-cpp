@@ -34,4 +34,24 @@ void resp_encoder_test() {
     assert(!miniredis::resp::parse_array("+PING\r\n").has_value());
     assert(!miniredis::resp::parse_array("*1\r\n$4\r\nPIN\r\n").has_value());
     assert(!miniredis::resp::parse_array("*1\r\n$A\r\nPING\r\n").has_value());
+
+    using miniredis::resp::ParseStatus;
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "*92233720368547758070\r\n").status == ParseStatus::Invalid);
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "$not-an-array\r\n").status == ParseStatus::Invalid);
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "*1025\r\n").status == ParseStatus::TooLarge);
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "*1\r\n$92233720368547758070\r\n").status == ParseStatus::Invalid);
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "*1\r\n$524289\r\n").status == ParseStatus::TooLarge);
+    assert(miniredis::resp::parse_array_prefix_view_checked(
+               "*1\r\n$4\r\nPI").status == ParseStatus::Incomplete);
+
+    const std::string valid = "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    for (std::size_t length = 0; length < valid.size(); ++length) {
+        assert(miniredis::resp::parse_array_prefix_view_checked(
+                   std::string_view(valid).substr(0, length)).status == ParseStatus::Incomplete);
+    }
 }

@@ -1,6 +1,8 @@
 #include "miniredis/resp.hpp"
 
 #include <cstddef>
+#include <charconv>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -22,26 +24,12 @@ std::optional<long long> parse_number(std::string_view line) {
     if (line.empty()) {
         return std::nullopt;
     }
-
     long long value = 0;
-    std::size_t pos = 0;
-    const bool negative = line[0] == '-';
-    if (negative) {
-        if (line.size() == 1) {
-            return std::nullopt;
-        }
-        pos = 1;
+    const auto parsed = std::from_chars(line.data(), line.data() + line.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != line.data() + line.size()) {
+        return std::nullopt;
     }
-
-    for (; pos < line.size(); ++pos) {
-        const char c = line[pos];
-        if (c < '0' || c > '9') {
-            return std::nullopt;
-        }
-        value = value * 10 + (c - '0');
-    }
-
-    return negative ? -value : value;
+    return value;
 }
 
 }  // namespace
@@ -73,22 +61,36 @@ std::optional<ParseResult> parse_array_prefix(std::string_view input) {
 }
 
 std::optional<ParseViewResult> parse_array_prefix_view(std::string_view input) {
+    auto checked = parse_array_prefix_view_checked(input);
+    if (checked.status != ParseStatus::Complete) {
+        return std::nullopt;
+    }
+    return std::move(checked.result);
+}
+
+CheckedParseViewResult parse_array_prefix_view_checked(std::string_view input) {
     std::string_view view(input);
     std::size_t pos = 0;
 
-    if (view.empty() || view[pos] != '*') {
-        return std::nullopt;
+    if (view.empty()) {
+        return {ParseStatus::Incomplete, {}};
+    }
+    if (view[pos] != '*') {
+        return {ParseStatus::Invalid, {}};
     }
 
     ++pos;
     const auto array_len_line = read_line(view, pos);
     if (!array_len_line.has_value()) {
-        return std::nullopt;
+        return {view.size() > 32 ? ParseStatus::Invalid : ParseStatus::Incomplete, {}};
     }
 
     const auto array_len = parse_number(*array_len_line);
     if (!array_len.has_value() || *array_len < 0) {
-        return std::nullopt;
+        return {ParseStatus::Invalid, {}};
+    }
+    if (static_cast<unsigned long long>(*array_len) > kMaxArrayElements) {
+        return {ParseStatus::TooLarge, {}};
     }
 
     std::vector<std::string_view> values;
@@ -96,35 +98,41 @@ std::optional<ParseViewResult> parse_array_prefix_view(std::string_view input) {
 
     for (long long i = 0; i < *array_len; ++i) {
         if (pos >= view.size() || view[pos] != '$') {
-            return std::nullopt;
+            return {pos >= view.size() ? ParseStatus::Incomplete : ParseStatus::Invalid, {}};
         }
 
         ++pos;
         const auto bulk_len_line = read_line(view, pos);
         if (!bulk_len_line.has_value()) {
-            return std::nullopt;
+            return {view.size() - pos > 32 ? ParseStatus::Invalid : ParseStatus::Incomplete, {}};
         }
 
         const auto bulk_len = parse_number(*bulk_len_line);
         if (!bulk_len.has_value() || *bulk_len < 0) {
-            return std::nullopt;
+            return {ParseStatus::Invalid, {}};
+        }
+        if (static_cast<unsigned long long>(*bulk_len) > kMaxBulkStringBytes) {
+            return {ParseStatus::TooLarge, {}};
         }
 
         const auto len = static_cast<std::size_t>(*bulk_len);
-        if (pos + len + 2 > view.size()) {
-            return std::nullopt;
+        if (len > view.size() - pos || view.size() - pos - len < 2) {
+            return {ParseStatus::Incomplete, {}};
         }
 
         values.emplace_back(view.substr(pos, len));
         pos += len;
 
         if (view.substr(pos, 2) != "\r\n") {
-            return std::nullopt;
+            return {ParseStatus::Invalid, {}};
         }
         pos += 2;
     }
 
-    return ParseViewResult{std::move(values), pos};
+    if (pos > kMaxRequestBytes) {
+        return {ParseStatus::TooLarge, {}};
+    }
+    return {ParseStatus::Complete, ParseViewResult{std::move(values), pos}};
 }
 
 std::string array(const std::vector<std::string>& values) {

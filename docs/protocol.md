@@ -43,3 +43,7 @@ DECR key
 `MGET` returns an array of bulk strings and null bulk strings. `SET NX` and
 `SET XX` return `+OK` when a write is applied and `$-1` when the condition is
 not met.
+
+## Request Safety Limits
+
+The parser validates decimal lengths with overflow-aware conversion before allocating memory. Requests are limited to 1 MiB, arrays to 1,024 elements, and individual bulk strings to 512 KiB. Invalid or oversized declarations receive an error and the connection is closed.

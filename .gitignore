@@ -1,6 +1,7 @@
-build/
+build*/
 .DS_Store
 data/*
 !data/.gitkeep
 *.aof
 *.log
+performance-results/

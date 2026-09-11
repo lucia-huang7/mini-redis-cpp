@@ -2,11 +2,13 @@
 
 Mini Redis uses an append-only file for persistence. Mutating commands are encoded as RESP arrays and appended to the AOF after they execute successfully.
 
-Recorded commands:
+All mutating commands pass through one commit lock. The Store mutation and its AOF append therefore have the same total order, even when multiple workers repeatedly write the same key. A reply is not sent until the append has completed.
 
-- `SET`
+Recorded commands are normalized before append:
+
+- `SET` (`EX`/`PX` are converted to `PXAT` with an absolute Unix-millisecond deadline)
 - `DEL`
-- `EXPIRE`
+- `PEXPIREAT` (`EXPIRE` is converted to this absolute form)
 - `INCR`
 - `DECR`
 
@@ -33,6 +35,14 @@ The server supports three AOF sync policies:
 
 `no` writes to the operating system page cache and does not call `fsync`. This is the fastest mode and provides the weakest durability guarantee.
 
+## AOF Failure Semantics
+
+If an AOF append or sync fails, the command is not acknowledged as successful. Because its in-memory mutation may already have occurred, the server enters a protective write-disabled state: reads remain available, but every later write returns `MISCONF` until restart. This prevents subsequent writes from extending a state that cannot be reconstructed from the log.
+
+The integration suite repeatedly writes one shared key from multiple clients, captures its final in-memory value, restarts the server, and verifies that replay produces the identical value.
+
+Unit tests inject partial writes, `ENOSPC`, and `fsync` errors through the AOF I/O boundary. The production path still defaults directly to the operating-system `write` and `fsync` calls; the hooks exist only to make failure semantics deterministic and testable.
+
 ## Replay
 
 On startup, the server replays the AOF command by command. Replay is streaming: the file is read in chunks rather than loaded into memory as one large string.
@@ -41,9 +51,11 @@ If replay reaches an incomplete or corrupt tail, the AOF is truncated to the las
 
 ## TTL Semantics
 
-The current AOF records `EXPIRE key seconds` as a relative TTL command. On replay, that relative TTL starts from replay time, not from the original write time.
+The in-memory store uses `std::chrono::steady_clock` deadlines, so normal expiration is monotonic and is not affected by wall-clock adjustments. The durable representation uses Unix epoch milliseconds because a monotonic clock value is not meaningful across process restarts.
 
-This keeps the command set small, but it is not identical to Redis' production-grade expiration persistence. A stronger design would persist absolute expiration timestamps, for example with an internal `EXPIREAT` representation.
+Before a TTL-bearing mutation executes, the commit path computes one absolute deadline. `EXPIRE` is executed and recorded as `PEXPIREAT`; `SET EX` and `SET PX` are executed and recorded as `SET PXAT`. The same deadline therefore governs both the live mutation and its AOF record. During replay, an absolute deadline is converted back to a monotonic remaining duration. A deadline that passed while the server was offline expires immediately instead of receiving a fresh TTL.
+
+`EXPIREAT`, `PEXPIREAT`, and the `SET EXAT`/`PXAT` options are also accepted directly. Legacy AOF entries containing relative `EXPIRE`, `SET EX`, or `SET PX` remain readable, although an old entry cannot recover downtime that was never encoded in that file.
 
 ## Compaction
 

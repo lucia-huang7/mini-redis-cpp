@@ -8,6 +8,26 @@
 #include <utility>
 
 namespace miniredis {
+namespace {
+
+std::chrono::steady_clock::time_point steady_deadline_from_unix_ms(long long unix_ms) {
+    const auto steady_now = std::chrono::steady_clock::now();
+    const auto wall_now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    if (unix_ms <= wall_now_ms) {
+        return steady_now;
+    }
+
+    const auto remaining = std::chrono::milliseconds(unix_ms - wall_now_ms);
+    const auto maximum_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::time_point::max() - steady_now);
+    if (remaining >= maximum_ms) {
+        return std::chrono::steady_clock::time_point::max();
+    }
+    return steady_now + remaining;
+}
+
+}  // namespace
 
 bool Store::set(std::string key, std::string value) {
     return set(std::move(key), std::move(value), SetOptions{});
@@ -32,6 +52,8 @@ bool Store::set(std::string key, std::string value, SetOptions options) {
     std::optional<std::chrono::steady_clock::time_point> expires_at;
     if (options.ttl.has_value()) {
         expires_at = std::chrono::steady_clock::now() + *options.ttl;
+    } else if (options.expires_at_unix_ms.has_value()) {
+        expires_at = steady_deadline_from_unix_ms(*options.expires_at_unix_ms);
     }
 
     shard.values[std::move(key)] = Value{std::move(value), expires_at};
@@ -94,6 +116,21 @@ bool Store::expire(const std::string& key, std::chrono::seconds ttl) {
     }
 
     it->second.expires_at = std::chrono::steady_clock::now() + ttl;
+    return true;
+}
+
+bool Store::expire_at(const std::string& key, long long unix_ms) {
+    auto& shard = shard_for(key);
+    std::unique_lock lock(shard.mutex);
+    auto it = shard.values.find(key);
+    if (it == shard.values.end() || is_expired(it->second)) {
+        if (it != shard.values.end()) {
+            shard.values.erase(it);
+        }
+        return false;
+    }
+
+    it->second.expires_at = steady_deadline_from_unix_ms(unix_ms);
     return true;
 }
 

@@ -1,34 +1,42 @@
-name: CI
+name: Linux quality gates
 
 on:
   push:
   pull_request:
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Debug
-            build_type: Debug
-            cmake_args: ""
-          - name: Release
-            build_type: Release
-            cmake_args: ""
-          - name: ASan UBSan
-            build_type: Debug
-            cmake_args: "-DMINI_REDIS_ENABLE_SANITIZERS=ON"
-
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ make
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
 
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ${{ matrix.cmake_args }}
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ make
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DMINI_REDIS_ENABLE_SANITIZERS=ON -DMINI_REDIS_BUILD_BENCHMARKS=OFF
+      - run: cmake --build build --parallel 2
+      - run: ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1 UBSAN_OPTIONS=halt_on_error=1 ctest --test-dir build --output-on-failure
 
-      - name: Build
-        run: cmake --build build --parallel
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ make
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DMINI_REDIS_BUILD_BENCHMARKS=OFF -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
+      - run: cmake --build build --parallel 2
+      - run: TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build --output-on-failure
 
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+  resp-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake clang
+      - run: CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DMINI_REDIS_BUILD_TESTS=OFF -DMINI_REDIS_BUILD_BENCHMARKS=OFF -DMINI_REDIS_BUILD_FUZZER=ON
+      - run: cmake --build build --parallel 2 --target miniredis_resp_fuzz
+      - run: ./build/miniredis_resp_fuzz -max_total_time=30 -timeout=2

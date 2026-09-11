@@ -12,7 +12,7 @@ namespace miniredis {
 
 class ThreadPool {
 public:
-    explicit ThreadPool(std::size_t workers);
+    explicit ThreadPool(std::size_t workers, std::size_t max_queued_tasks = 1024);
     ~ThreadPool();
 
     ThreadPool(const ThreadPool&) = delete;
@@ -28,6 +28,7 @@ private:
     std::condition_variable condition_;
     std::queue<std::function<void()>> tasks_;
     std::vector<std::thread> workers_;
+    std::size_t max_queued_tasks_;
     bool stopping_ = false;
 };
 

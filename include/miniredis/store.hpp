@@ -21,6 +21,7 @@ public:
 
     struct SetOptions {
         std::optional<std::chrono::milliseconds> ttl;
+        std::optional<long long> expires_at_unix_ms;
         SetCondition condition = SetCondition::Always;
     };
 
@@ -31,6 +32,7 @@ public:
     std::size_t exists(const std::vector<std::string>& keys);
     bool del(const std::string& key);
     bool expire(const std::string& key, std::chrono::seconds ttl);
+    bool expire_at(const std::string& key, long long unix_ms);
     std::optional<long long> ttl(const std::string& key);
     long long increment(const std::string& key, long long delta);
     std::size_t remove_expired();

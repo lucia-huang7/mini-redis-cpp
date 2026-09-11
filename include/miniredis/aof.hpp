@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <functional>
+#include <sys/types.h>
 
 namespace miniredis {
 
@@ -16,9 +18,17 @@ enum class AofSyncPolicy {
     No,
 };
 
+struct AofIoHooks {
+    std::function<ssize_t(int, const void*, std::size_t)> write;
+    std::function<int(int)> fsync;
+};
+
 class Aof {
 public:
-    explicit Aof(std::filesystem::path path, AofSyncPolicy sync_policy = AofSyncPolicy::EverySec);
+    explicit Aof(
+        std::filesystem::path path,
+        AofSyncPolicy sync_policy = AofSyncPolicy::EverySec,
+        AofIoHooks io_hooks = {});
     ~Aof();
 
     Aof(const Aof&) = delete;
@@ -36,6 +46,7 @@ private:
     int fd_ = -1;
     mutable std::mutex mutex_;
     mutable std::chrono::steady_clock::time_point last_sync_;
+    AofIoHooks io_hooks_;
 };
 
 }  // namespace miniredis

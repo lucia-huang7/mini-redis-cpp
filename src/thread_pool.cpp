@@ -1,12 +1,14 @@
 #include "miniredis/thread_pool.hpp"
 
 #include <algorithm>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 
 namespace miniredis {
 
-ThreadPool::ThreadPool(std::size_t workers) {
+ThreadPool::ThreadPool(std::size_t workers, std::size_t max_queued_tasks)
+    : max_queued_tasks_(std::max<std::size_t>(1, max_queued_tasks)) {
     const auto worker_count = std::max<std::size_t>(1, workers);
     workers_.reserve(worker_count);
     for (std::size_t i = 0; i < worker_count; ++i) {
@@ -33,6 +35,9 @@ void ThreadPool::enqueue(std::function<void()> task) {
         std::lock_guard lock(mutex_);
         if (stopping_) {
             throw std::runtime_error("thread pool is stopping");
+        }
+        if (tasks_.size() >= max_queued_tasks_) {
+            throw std::runtime_error("thread pool queue is full");
         }
         tasks_.push(std::move(task));
     }
@@ -61,7 +66,13 @@ void ThreadPool::run() {
             tasks_.pop();
         }
 
-        task();
+        try {
+            task();
+        } catch (const std::exception& error) {
+            std::cerr << "worker task failed: " << error.what() << "\n";
+        } catch (...) {
+            std::cerr << "worker task failed: unknown exception\n";
+        }
     }
 }
 

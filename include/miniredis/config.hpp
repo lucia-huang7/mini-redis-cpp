@@ -14,6 +14,8 @@ struct Config {
     std::optional<std::filesystem::path> aof_path = std::filesystem::path("data/appendonly.aof");
     AofSyncPolicy appendfsync = AofSyncPolicy::EverySec;
     std::size_t workers = 0;
+    std::size_t max_queued_clients = 1024;
+    std::size_t idle_timeout_ms = 30000;
 };
 
 Config parse_config(int argc, char** argv);
