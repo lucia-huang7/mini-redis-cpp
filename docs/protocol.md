@@ -29,15 +29,18 @@ $-1\r\n
 ```text
 PING [message]
 ECHO value
-SET key value [EX seconds | PX milliseconds] [NX | XX]
+SET key value [EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-ms] [NX | XX]
 GET key
 MGET key [key ...]
 EXISTS key [key ...]
 DEL key
 EXPIRE key seconds
+EXPIREAT key unix-seconds
+PEXPIREAT key unix-ms
 TTL key
 INCR key
 DECR key
+BGREWRITEAOF
 ```
 
 `MGET` returns an array of bulk strings and null bulk strings. `SET NX` and
@@ -46,4 +49,6 @@ not met.
 
 ## Request Safety Limits
 
-The parser validates decimal lengths with overflow-aware conversion before allocating memory. Requests are limited to 1 MiB, arrays to 1,024 elements, and individual bulk strings to 512 KiB. Invalid or oversized declarations receive an error and the connection is closed.
+The parser validates decimal lengths with overflow-aware conversion before allocating memory. Requests are limited to 1 MiB, arrays to 1,024 elements, and individual bulk strings to 512 KiB. Invalid or oversized declarations receive an error and the connection is closed after the error is flushed.
+
+Requests must be RESP arrays; inline commands such as a bare `PING\r\n` are rejected.

@@ -2,15 +2,16 @@
 
 Mini Redis uses an append-only file for persistence. Mutating commands are encoded as RESP arrays and appended to the AOF after they execute successfully.
 
-All mutating commands pass through one commit lock. The Store mutation and its AOF append therefore have the same total order, even when multiple workers repeatedly write the same key. A reply is not sent until the append has completed.
+When the AOF is enabled, all mutating commands pass through one commit lock. The Store mutation and its AOF append therefore have the same total order, even when multiple workers repeatedly write the same key. A reply is not sent until the append has completed. When the AOF is disabled there is no log order to protect, so writes skip the commit lock and rely only on per-shard locks.
 
-Recorded commands are normalized before append:
+Recorded commands are normalized before append so that every record is a blind write or an absolute deadline:
 
-- `SET` (`EX`/`PX` are converted to `PXAT` with an absolute Unix-millisecond deadline)
+- `SET` (`EX`/`PX` are converted to `PXAT` with an absolute Unix-millisecond deadline; `NX`/`XX` are dropped because only applied writes are logged)
 - `DEL`
-- `PEXPIREAT` (`EXPIRE` is converted to this absolute form)
-- `INCR`
-- `DECR`
+- `PEXPIREAT` (`EXPIRE` is converted to this absolute form) and `EXPIREAT`
+- `INCR`/`DECR` are logged as `SET key <result>`, plus `PXAT <deadline>` when the key has a TTL
+
+Older AOF files that contain `INCR`, `DECR`, or conditional `SET` records still replay correctly; only new records use the normalized form.
 
 Read-only commands such as `GET`, `MGET`, `EXISTS`, `TTL`, `PING`, and `ECHO`
 are not recorded.
@@ -57,8 +58,20 @@ Before a TTL-bearing mutation executes, the commit path computes one absolute de
 
 `EXPIREAT`, `PEXPIREAT`, and the `SET EXAT`/`PXAT` options are also accepted directly. Legacy AOF entries containing relative `EXPIRE`, `SET EX`, or `SET PX` remain readable, although an old entry cannot recover downtime that was never encoded in that file.
 
-## Compaction
+## Rewrite (Compaction)
 
-AOF rewrite/compaction is not implemented yet. The file can grow because old overwritten values and deleted keys remain in the log.
+Overwritten values and deleted keys stay in the log until a rewrite replaces it with one record per live key. A rewrite starts on `BGREWRITEAOF` or automatically once the file is at least `--auto-aof-rewrite-min-size` bytes (default 64 MiB, `0` disables) and has grown by `--auto-aof-rewrite-percentage` (default 100%) since the previous rewrite or startup.
 
-The intended next step is a rewrite pass that snapshots the current store into a compact temporary AOF and atomically replaces the old file.
+The rewrite runs in a background thread and does not fork:
+
+1. Under the commit lock, mark a rewrite in progress and start capturing every newly committed record into a delta buffer. Normal appends to the current AOF continue.
+2. Without the commit lock, copy one shard at a time under that shard's shared lock and write `SET key value [PXAT deadline]` for each live key into `appendonly.aof.rewrite.tmp`, then `fsync` it.
+3. Under the commit lock, append the delta buffer, `fsync`, `rename` the temporary file over the AOF, `fsync` the directory, and reopen the AOF for appending.
+
+Writers are blocked only during step 3. If any step before the rename fails, the temporary file is removed and the original AOF is untouched. If the rename succeeds but reopening fails, the server enters the same write-disabled `MISCONF` state as any other AOF failure rather than append to an unlinked file.
+
+### Why concurrent writes are safe
+
+A shard copy in step 2 can include some of the writes that are also in the delta buffer, so replay applies those writes twice. That is harmless because every record is a blind write or an absolute deadline. For one key, `SET` and `DEL` set the final state regardless of what came before, and `PEXPIREAT` only changes the deadline of an existing key. Replaying the full delta sequence over any state that the same sequence passed through therefore ends in the same state as replaying it over the state before the rewrite began. This is the reason `INCR` and conditional `SET` are logged in their resulting form: replaying `INCR` twice would not be harmless.
+
+The unit suite rewrites five times while four threads mix `SET`, `DEL`, and `INCR`, then checks that replaying the final file reproduces the live store exactly. The integration suite issues `BGREWRITEAOF` against a running server, keeps writing, restarts, and verifies values and TTLs.

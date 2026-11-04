@@ -19,8 +19,8 @@ printf 'clients,throughput_req_s,p99_ms,peak_rss_kb,peak_cpu_percent\n' > "$resu
 
 "$BUILD_DIR/miniredis_server" \
   --port "$PORT" \
-  --workers 16 \
-  --max-queued-clients 2048 \
+  --workers "${WORKERS:-$(getconf _NPROCESSORS_ONLN)}" \
+  --max-clients 4096 \
   --idle-timeout-ms 30000 \
   --aof "" > "$OUTPUT_DIR/server.log" 2>&1 &
 server_pid=$!

@@ -31,8 +31,12 @@ CLIENT_LEVELS="1 4 8 16 32 64 128 256" \
 
 ## Sample local results
 
-The README saturation chart uses 16 server workers, pipeline depth 16, a 100,000-key space, 100,000 requests per point, and AOF disabled. Each value is the median of three runs on the same machine.
+The earlier worker-pool build peaked at 16 clients and degraded beyond its 16 workers; at 128 clients its p99 rose to tens of milliseconds because extra connections queued for a worker. Those figures described the old design and are no longer representative.
 
-Peak median throughput occurred at 16 clients: approximately 942k requests/second for `PING` and 922k requests/second for `SETGET`. Throughput declined beyond the 16-worker concurrency level. At 128 clients, p99 latency increased to about 61 ms for both workloads, exposing the queueing boundary of the blocking worker model.
+The event-loop build was measured on a 2-vCPU Linux VM against Redis 7.0.15:
 
-These measurements are local baselines rather than cross-machine performance claims.
+- Non-pipelined `redis-benchmark -t set` at 50, 200, and 1,000 clients: about 92k, 80k, and 90k requests/second with 2 event loops (Redis 7.0: 82k, 107k, 102k).
+- Pipelined `SET` (16 clients, depth 16, persistence off): median 738k requests/second with 16 loops and 857k with 2 loops, up from 481k before the commit lock was skipped for non-AOF writes.
+- `GET` with 2M TTL-bearing keys loaded: max latency 4 to 5.5 ms, matching an empty keyspace, versus 19 to 27 ms with the old full-scan cleaner.
+
+On a 2-vCPU machine more loops than cores adds scheduling overhead, so `--workers` defaults to the CPU count. These measurements are local baselines rather than cross-machine performance claims.

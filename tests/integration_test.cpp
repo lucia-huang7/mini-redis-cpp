@@ -188,7 +188,7 @@ public:
         std::filesystem::path aof_path,
         std::size_t workers = 4,
         std::size_t idle_timeout_ms = 30000,
-        std::size_t max_queued_clients = 1024)
+        std::size_t max_clients = 1024)
         : port_(port) {
         pid_ = ::fork();
         if (pid_ < 0) {
@@ -200,7 +200,7 @@ public:
             const auto workers_arg = std::to_string(workers);
             const auto aof_arg = aof_path.string();
             const auto idle_timeout_arg = std::to_string(idle_timeout_ms);
-            const auto max_queued_clients_arg = std::to_string(max_queued_clients);
+            const auto max_clients_arg = std::to_string(max_clients);
             ::execl(
                 server_path.c_str(),
                 server_path.c_str(),
@@ -212,8 +212,8 @@ public:
                 aof_arg.c_str(),
                 "--idle-timeout-ms",
                 idle_timeout_arg.c_str(),
-                "--max-queued-clients",
-                max_queued_clients_arg.c_str(),
+                "--max-clients",
+                max_clients_arg.c_str(),
                 static_cast<char*>(nullptr));
             _exit(127);
         }
@@ -448,6 +448,8 @@ void idle_and_slow_client_timeout_test(const std::string& server_path) {
 
     auto idle = connect_to(port);
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    char byte = 0;
+    assert(::recv(idle.get(), &byte, 1, MSG_DONTWAIT) == 0);
     Client after_idle(port);
     assert(after_idle.command({"PING"}) == "+PONG\r\n");
 
@@ -461,9 +463,9 @@ void idle_and_slow_client_timeout_test(const std::string& server_path) {
     std::filesystem::remove(aof_path);
 }
 
-void connection_queue_exhaustion_test(const std::string& server_path) {
+void connection_limit_test(const std::string& server_path) {
     const auto port = find_free_port();
-    const auto aof_path = temp_aof_path("queue_exhaustion");
+    const auto aof_path = temp_aof_path("connection_limit");
     std::filesystem::remove(aof_path);
     ServerProcess server(server_path, port, aof_path, 1, 200, 2);
 
@@ -491,6 +493,100 @@ void connection_queue_exhaustion_test(const std::string& server_path) {
     std::filesystem::remove(aof_path);
 }
 
+// Regression: with one blocking worker per connection, more clients than
+// workers stalled until the idle timeout. Default redis-benchmark uses 50.
+void many_clients_beyond_loop_count_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("many_clients");
+    std::filesystem::remove(aof_path);
+    ServerProcess server(server_path, port, aof_path, 2, 30000, 1024);
+
+    constexpr std::size_t clients = 64;
+    constexpr std::size_t iterations = 200;
+    std::vector<Client> connections;
+    connections.reserve(clients);
+    for (std::size_t i = 0; i < clients; ++i) {
+        connections.emplace_back(port);
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    for (std::size_t i = 0; i < clients; ++i) {
+        threads.emplace_back([&connections, i] {
+            auto& client = connections[i];
+            for (std::size_t j = 0; j < iterations; ++j) {
+                const auto key = "many:" + std::to_string(i);
+                assert(client.command({"SET", key, std::to_string(j)}) == "+OK\r\n");
+                assert(client.command({"GET", key}) == miniredis::resp::bulk_string(std::to_string(j)));
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    assert(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+
+    server.stop();
+    std::filesystem::remove(aof_path);
+}
+
+void large_pipeline_backpressure_test(std::uint16_t port) {
+    Client client(port);
+    const std::string value(4096, 'x');
+    assert(client.command({"SET", "big", value}) == "+OK\r\n");
+
+    // ~2000 replies of 4 KB exceed the 1 MB output high-water mark, so the
+    // server has to pause parsing, drain, and resume without losing requests.
+    constexpr int requests = 2000;
+    std::string batch;
+    for (int i = 0; i < requests; ++i) {
+        batch += miniredis::resp::array({"GET", "big"});
+    }
+    std::thread sender([&client, &batch] { client.send_raw(batch); });
+    for (int i = 0; i < requests; ++i) {
+        assert(client.read() == miniredis::resp::bulk_string(value));
+    }
+    sender.join();
+    assert(client.command({"PING"}) == "+PONG\r\n");
+}
+
+void bgrewriteaof_restart_test(const std::string& server_path) {
+    const auto port = find_free_port();
+    const auto aof_path = temp_aof_path("bgrewriteaof");
+    std::filesystem::remove(aof_path);
+
+    {
+        ServerProcess server(server_path, port, aof_path);
+        Client client(port);
+        for (int i = 0; i < 500; ++i) {
+            assert(client.command({"SET", "rewritten", std::to_string(i)}) == "+OK\r\n");
+        }
+        assert(client.command({"SET", "counter", "41"}) == "+OK\r\n");
+        assert(client.command({"EXPIRE", "counter", "100"}) == ":1\r\n");
+        const auto before = std::filesystem::file_size(aof_path);
+        assert(client.command({"BGREWRITEAOF"}) == "+Background append only file rewriting started\r\n");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::filesystem::file_size(aof_path) >= before &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        assert(std::filesystem::file_size(aof_path) < before / 10);
+        assert(client.command({"INCR", "counter"}) == ":42\r\n");
+        server.stop();
+    }
+
+    {
+        ServerProcess server(server_path, port, aof_path);
+        Client client(port);
+        assert(client.command({"GET", "rewritten"}) == "$3\r\n499\r\n");
+        assert(client.command({"GET", "counter"}) == "$2\r\n42\r\n");
+        const auto ttl = std::stoll(client.command({"TTL", "counter"}).substr(1));
+        assert(ttl > 90 && ttl <= 100);
+        server.stop();
+    }
+    std::filesystem::remove(aof_path);
+}
+
 void run_server_integration_tests(const std::string& server_path) {
     const auto port = find_free_port();
     const auto aof_path = temp_aof_path("integration");
@@ -502,6 +598,7 @@ void run_server_integration_tests(const std::string& server_path) {
     error_input_test(port);
     hostile_resp_test(port);
     concurrent_clients_test(port);
+    large_pipeline_backpressure_test(port);
     ttl_boundary_test(port);
     server.stop();
 
@@ -521,7 +618,9 @@ int main(int argc, char** argv) {
     aof_ttl_deadline_replay_test(argv[1]);
     concurrent_aof_order_test(argv[1]);
     idle_and_slow_client_timeout_test(argv[1]);
-    connection_queue_exhaustion_test(argv[1]);
+    connection_limit_test(argv[1]);
+    many_clients_beyond_loop_count_test(argv[1]);
+    bgrewriteaof_restart_test(argv[1]);
 
     std::cout << "Integration tests passed\n";
     return 0;

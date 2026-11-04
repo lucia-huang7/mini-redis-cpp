@@ -1,11 +1,11 @@
 #include "miniredis/ttl.hpp"
 
-#include "miniredis/store.hpp"
+#include <random>
 
 namespace miniredis {
 
-TtlCleaner::TtlCleaner(Store& store, std::chrono::milliseconds interval)
-    : store_(store), interval_(interval) {}
+TtlCleaner::TtlCleaner(Store& store, std::chrono::milliseconds interval, Store::ActiveExpireConfig config)
+    : store_(store), interval_(interval), config_(config) {}
 
 TtlCleaner::~TtlCleaner() {
     stop();
@@ -21,10 +21,14 @@ void TtlCleaner::start() {
 }
 
 void TtlCleaner::stop() {
-    bool expected = true;
-    if (!running_.compare_exchange_strong(expected, false)) {
-        return;
+    {
+        std::lock_guard lock(wait_mutex_);
+        bool expected = true;
+        if (!running_.compare_exchange_strong(expected, false)) {
+            return;
+        }
     }
+    wake_.notify_all();
 
     if (worker_.joinable()) {
         worker_.join();
@@ -32,9 +36,12 @@ void TtlCleaner::stop() {
 }
 
 void TtlCleaner::run() {
+    std::mt19937_64 rng(std::random_device{}());
     while (running_.load()) {
-        store_.remove_expired();
-        std::this_thread::sleep_for(interval_);
+        removed_total_.fetch_add(store_.active_expire_cycle(rng, config_), std::memory_order_relaxed);
+
+        std::unique_lock lock(wait_mutex_);
+        wake_.wait_for(lock, interval_, [this] { return !running_.load(); });
     }
 }
 

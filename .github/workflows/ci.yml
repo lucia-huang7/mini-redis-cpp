@@ -32,6 +32,23 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build --output-on-failure
 
+  poll-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake g++ make
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMINI_REDIS_POLLER=poll -DMINI_REDIS_BUILD_BENCHMARKS=OFF
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure
+
+  macos-kqueue:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMINI_REDIS_BUILD_BENCHMARKS=OFF
+      - run: cmake --build build --parallel 3
+      - run: ctest --test-dir build --output-on-failure
+
   resp-fuzz:
     runs-on: ubuntu-latest
     steps:

@@ -10,6 +10,8 @@ option(MINI_REDIS_BUILD_TESTS "Build tests" ON)
 option(MINI_REDIS_BUILD_BENCHMARKS "Build benchmark client" ON)
 option(MINI_REDIS_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(MINI_REDIS_BUILD_FUZZER "Build the libFuzzer RESP parser target" OFF)
+set(MINI_REDIS_POLLER "auto" CACHE STRING "Event notification backend: auto, epoll, kqueue, or poll")
+set_property(CACHE MINI_REDIS_POLLER PROPERTY STRINGS auto epoll kqueue poll)
 
 if(MINI_REDIS_ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -26,11 +28,32 @@ add_library(miniredis
     src/config.cpp
     src/durable_executor.cpp
     src/resp.cpp
+    src/poller.cpp
     src/server.cpp
     src/store.cpp
-    src/thread_pool.cpp
     src/ttl.cpp
 )
+
+find_package(Threads REQUIRED)
+target_link_libraries(miniredis PUBLIC Threads::Threads)
+
+# auto picks epoll on Linux and kqueue on macOS/BSD inside poller.hpp. Forcing
+# kqueue on Linux links libkqueue, which is good for a compile check only: it
+# does not report write readiness on a socket that also has a read filter.
+if(MINI_REDIS_POLLER STREQUAL "epoll")
+    target_compile_definitions(miniredis PUBLIC MINI_REDIS_POLLER_EPOLL=1)
+elseif(MINI_REDIS_POLLER STREQUAL "poll")
+    target_compile_definitions(miniredis PUBLIC MINI_REDIS_POLLER_POLL=1)
+elseif(MINI_REDIS_POLLER STREQUAL "kqueue")
+    target_compile_definitions(miniredis PUBLIC MINI_REDIS_POLLER_KQUEUE=1)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(LIBKQUEUE REQUIRED IMPORTED_TARGET libkqueue)
+        target_link_libraries(miniredis PUBLIC PkgConfig::LIBKQUEUE)
+    endif()
+elseif(NOT MINI_REDIS_POLLER STREQUAL "auto")
+    message(FATAL_ERROR "MINI_REDIS_POLLER must be auto, epoll, kqueue, or poll")
+endif()
 
 target_include_directories(miniredis
     PUBLIC
@@ -64,7 +87,6 @@ if(MINI_REDIS_BUILD_TESTS)
         tests/resp_test.cpp
         tests/store_test.cpp
         tests/test_main.cpp
-        tests/thread_pool_test.cpp
         tests/ttl_test.cpp
     )
     target_link_libraries(miniredis_tests PRIVATE miniredis)

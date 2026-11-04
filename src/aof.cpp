@@ -11,6 +11,7 @@
 #include <utility>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace miniredis {
@@ -51,6 +52,10 @@ Aof::Aof(std::filesystem::path path, AofSyncPolicy sync_policy, AofIoHooks io_ho
     if (fd_ < 0) {
         throw std::runtime_error(std::string("failed to open AOF file: ") + std::strerror(errno));
     }
+    struct stat info {};
+    if (::fstat(fd_, &info) == 0) {
+        size_ = static_cast<std::size_t>(info.st_size);
+    }
 }
 
 Aof::~Aof() {
@@ -62,7 +67,42 @@ Aof::~Aof() {
 void Aof::append(const std::string& encoded_command) const {
     std::lock_guard lock(mutex_);
     write_all(fd_, encoded_command, io_hooks_);
+    size_ += encoded_command.size();
     sync_if_needed();
+}
+
+void Aof::replace_with(const std::filesystem::path& rewritten) const {
+    std::lock_guard lock(mutex_);
+    if (::rename(rewritten.c_str(), path_.c_str()) < 0) {
+        throw std::runtime_error(std::string("failed to install rewritten AOF: ") + std::strerror(errno));
+    }
+
+    const auto directory = path_.has_parent_path() ? path_.parent_path() : std::filesystem::path(".");
+    const int dir_fd = ::open(directory.c_str(), O_RDONLY);
+    if (dir_fd >= 0) {
+        ::fsync(dir_fd);
+        ::close(dir_fd);
+    }
+
+    const int new_fd = ::open(path_.c_str(), O_APPEND | O_WRONLY);
+    if (new_fd < 0) {
+        throw std::runtime_error(std::string("failed to reopen rewritten AOF: ") + std::strerror(errno));
+    }
+    struct stat info {};
+    if (::fstat(new_fd, &info) < 0) {
+        ::close(new_fd);
+        throw std::runtime_error(std::string("failed to stat rewritten AOF: ") + std::strerror(errno));
+    }
+
+    ::close(fd_);
+    fd_ = new_fd;
+    size_ = static_cast<std::size_t>(info.st_size);
+    last_sync_ = std::chrono::steady_clock::now();
+}
+
+std::size_t Aof::size() const {
+    std::lock_guard lock(mutex_);
+    return size_;
 }
 
 std::size_t Aof::replay(CommandDispatcher& dispatcher) const {
@@ -129,6 +169,7 @@ void Aof::truncate_to(std::size_t offset) const {
     if (::ftruncate(fd_, static_cast<off_t>(offset)) < 0) {
         throw std::runtime_error(std::string("failed to truncate AOF file: ") + std::strerror(errno));
     }
+    size_ = offset;
     if (::lseek(fd_, 0, SEEK_END) < 0) {
         throw std::runtime_error(std::string("failed to seek AOF file: ") + std::strerror(errno));
     }
